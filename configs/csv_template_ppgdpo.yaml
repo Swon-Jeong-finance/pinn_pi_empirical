@@ -1,0 +1,85 @@
+project:
+  name: csv_template_ppgdpo_apt
+  output_dir: outputs/csv_template_ppgdpo_apt
+
+experiment:
+  kind: ppgdpo
+
+data:
+  mode: csv
+  returns_csv: demo_data/returns_panel.csv
+  states_csv: demo_data/states_panel.csv
+  factors_csv: demo_data/factors_panel.csv
+  date_col: date
+
+split:
+  train_start: 2000-01-31
+  test_start: 2008-01-31
+  end_date: 2014-12-31
+  refit_every: 12
+  min_train_months: 72
+
+state:
+  columns: [slow_value, fast_vol, curve_slope]
+
+factor_model:
+  extractor: provided
+  provided_factor_columns: [MKT, VALUE, BOND]
+
+mean_model:
+  kind: factor_apt
+  ridge_lambda: 1.0e-6
+
+covariance_model:
+  kind: asset_dcc
+  ridge_lambda: 1.0e-6
+  variance_floor: 1.0e-6
+  correlation_shrink: 0.10
+  factor_correlation_mode: independent
+  use_persistence: false
+  dcc_alpha: 0.02
+  dcc_beta: 0.97
+  adcc_gamma: 0.005
+  variance_lambda: 0.97
+  asset_covariance_shrink: 0.10
+
+policy:
+  risk_aversion: 6.0
+  risky_cap: 1.0
+  pgd_steps: 80
+  step_size: 0.05
+  turnover_penalty: 0.05
+
+ppgdpo:
+  device: cpu
+  hidden_dim: 24
+  hidden_layers: 2
+  epochs: 40
+  lr: 0.001
+  batch_size: 64
+  horizon_steps: 12
+  kappa: 1.0
+  mc_rollouts: 256
+  mc_sub_batch: 256
+  utility: crra
+  clamp_min_return: -0.95
+  clamp_port_ret_max: 5.0
+  clamp_wealth_min: 1.0e-8
+  clamp_state_std_abs: 8.0
+  covariance_mode: full
+  cross_strength: 1.0
+  eps_bar: 1.0e-6
+  newton_ridge: 1.0e-10
+  newton_tau: 0.95
+  newton_armijo: 1.0e-4
+  newton_backtrack: 0.5
+  max_newton: 30
+  tol_grad: 1.0e-8
+  max_line_search: 20
+  interior_margin: 1.0e-8
+  clamp_neg_jxx_min: 1.0e-12
+  train_seed: 17
+
+comparison:
+  cross_modes: [estimated, zero]
+  transaction_cost_bps: 0.0
