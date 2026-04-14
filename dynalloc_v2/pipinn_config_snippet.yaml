@@ -1,0 +1,26 @@
+optimizer_backend: pipinn
+pipinn:
+  device: cpu
+  dtype: float64
+  outer_iters: 6
+  eval_epochs: 120
+  n_train_int: 4096
+  n_train_bc: 1024
+  n_val_int: 2048
+  n_val_bc: 512
+  p_uniform: 0.30
+  p_emp: 0.70
+  p_tau_near0: 0.30
+  lr: 5.0e-4
+  grad_clip: 1.0
+  w_bc: 20.0
+  w_bc_dx: 5.0
+  scheduler_factor: 0.5
+  scheduler_patience: 3
+  min_lr: 1.0e-5
+  width: 128
+  depth: 4
+  covariance_train_mode: dcc_current
+  x_domain_quantile_low: 0.001
+  x_domain_quantile_high: 0.999
+  x_domain_buffer: 0.20

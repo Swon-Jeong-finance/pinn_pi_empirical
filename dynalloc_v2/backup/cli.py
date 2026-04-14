@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+
+import yaml
+
+from .experiment_windows import DEFAULT_SPLIT_PROFILE, available_split_profiles
+from .experiments import run_experiment
+from .legacy_cli import normalize_legacy_alias_argv, register_legacy_parsers
+from .replay import replay_manifest_sample
+from .workspace import init_workspace
+from .native_selection import native_select_factor_suite
+from .rank_sweep import run_rank_sweep
+from .raw_bundle import build_ff49_curve_core_bundle
+from .schema import Config
+
+
+def load_config(path: str | Path) -> Config:
+    p = Path(path)
+    payload = yaml.safe_load(p.read_text(encoding='utf-8')) or {}
+    return Config.model_validate(payload)
+
+
+def _add_split_override_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument('--split-profile', choices=available_split_profiles(), default=None)
+    parser.add_argument('--split-train-start', default=None)
+    parser.add_argument('--split-train-pool-end', default=None)
+    parser.add_argument('--split-test-start', default=None)
+    parser.add_argument('--split-end-date', default=None)
+
+
+def cmd_init_workspace(args):
+    payload = init_workspace(root=args.root)
+    for key, value in payload.items():
+        print(f'{key}: {value}')
+    return 0
+
+
+def cmd_replay_sample(args):
+    artifacts = replay_manifest_sample(
+        manifest_path=args.manifest,
+        rank=args.rank,
+        sample=args.sample,
+        protocol=args.protocol,
+        block_label=args.block_label,
+        out_dir=args.out_dir,
+        device_override=args.device,
+        mc_rollouts_override=args.ppgdpo_mc_rollouts,
+        mc_sub_batch_override=args.ppgdpo_mc_sub_batch,
+    )
+    print(f'output_dir: {artifacts.output_dir}')
+    print(f'fit_start: {artifacts.fit_start}')
+    print(f'fit_end: {artifacts.fit_end}')
+    print(f'replay_start: {artifacts.replay_start}')
+    print(f'replay_end: {artifacts.replay_end}')
+    print(f'zero_cost_summary: {artifacts.zero_cost_summary}')
+    print(f'all_costs_summary: {artifacts.all_costs_summary}')
+    print(f'results_csv: {artifacts.results_csv}')
+    return 0
+
+
+def cmd_validate(args):
+    cfg = load_config(args.config)
+    print('config ok')
+    print(cfg.model_dump_json(indent=2))
+    return 0
+
+
+def cmd_plan(args):
+    cfg = load_config(args.config)
+    print(yaml.safe_dump(cfg.model_dump(mode='json'), sort_keys=False))
+    return 0
+
+
+def cmd_run(args):
+    cfg = load_config(args.config)
+    artifacts = run_experiment(cfg)
+    print(f'output_dir: {artifacts.output_dir}')
+    print(f'summary_zero_cost: {artifacts.summary_zero_cost}')
+    print(f'summary_with_costs: {artifacts.summary_with_costs}')
+    return 0
+
+
+def cmd_run_rank_sweep(args):
+    artifacts = run_rank_sweep(
+        args.manifest,
+        device_override=args.device,
+        mc_rollouts_override=args.ppgdpo_mc_rollouts,
+        mc_sub_batch_override=args.ppgdpo_mc_sub_batch,
+        oos_protocols=args.oos_protocols,
+        emit_legacy_fixed_layout=bool(args.emit_legacy_fixed_layout),
+    )
+    print(f'output_dir: {artifacts.out_dir}')
+    print(f'progress_csv: {artifacts.progress_csv}')
+    print(f'zero_cost_summary: {artifacts.zero_cost_summary}')
+    print(f'all_costs_summary: {artifacts.all_costs_summary}')
+    print(f'results_csv: {artifacts.results_csv}')
+    return 0
+
+
+def cmd_build_ff49_base_bundle(args):
+    artifacts = build_ff49_curve_core_bundle(
+        out_dir=args.out_dir,
+        search_root=args.search_root,
+        ff49_zip=args.ff49_zip,
+        ff3_zip=args.ff3_zip,
+        ff5_zip=args.ff5_zip,
+        bond2y_csv=args.bond2y_csv,
+        bond5y_csv=args.bond5y_csv,
+        bond10y_csv=args.bond10y_csv,
+        fred_cache_dir=args.fred_cache_dir,
+        fred_api_key=args.fred_api_key,
+        refresh_fred=bool(args.refresh_fred),
+        macro_panel_csv=args.macro_panel_csv,
+        panel_start_date=args.panel_start_date,
+        panel_end_date=args.panel_end_date,
+        manifest_split_profile=args.manifest_split_profile,
+    )
+    print(f'base_out_dir: {artifacts.out_dir}')
+    print(f'returns_csv: {artifacts.returns_csv}')
+    print(f'macro_csv: {artifacts.macro_csv}')
+    print(f'ff3_csv: {artifacts.ff3_csv}')
+    print(f'ff5_csv: {artifacts.ff5_csv}')
+    print(f'bond_csv: {artifacts.bond_csv}')
+    print(f'manifest_yaml: {artifacts.manifest_yaml}')
+    return 0
+
+
+def cmd_select_native_suite(args):
+    artifacts = native_select_factor_suite(
+        base_dir=args.base_dir,
+        out_dir=args.out_dir,
+        factor_mode=args.factor_mode,
+        top_k=args.top_k,
+        stage1_top_k=args.stage1_top_k,
+        risk_aversion=args.risk_aversion,
+        cv_folds=args.cv_folds,
+        min_train_months=args.min_train_months,
+        rolling_window=args.rolling_window,
+        window_mode=args.window_mode,
+        candidate_zoo=args.candidate_zoo,
+        max_candidates=args.max_candidates,
+        rerank_top_n=args.rerank_top_n,
+        selection_split_mode=args.selection_split_mode,
+        selection_val_months=args.selection_val_months,
+        selection_device=args.selection_device,
+        ppgdpo_lite_epochs=args.ppgdpo_lite_epochs,
+        ppgdpo_lite_mc_rollouts=args.ppgdpo_lite_mc_rollouts,
+        ppgdpo_lite_mc_sub_batch=args.ppgdpo_lite_mc_sub_batch,
+        selection_transaction_cost_bps=args.selection_transaction_cost_bps,
+        ppgdpo_lite_covariance_mode=args.ppgdpo_lite_covariance_mode,
+        rerank_covariance_models=args.rerank_covariance_models,
+        select_rolling_oos_window=bool(not args.disable_rolling_oos_window_selection),
+        rolling_oos_window_grid=args.rolling_oos_window_grid,
+        selection_protocols=args.selection_protocols,
+        legacy_stage1_v1_root=args.legacy_stage1_v1_root,
+        split_profile_override=args.split_profile,
+        split_train_start_override=args.split_train_start,
+        split_train_pool_end_override=args.split_train_pool_end,
+        split_test_start_override=args.split_test_start,
+        split_end_date_override=args.split_end_date,
+    )
+    print(f'suite_out_dir: {artifacts.out_dir}')
+    print(f'manifest_yaml: {artifacts.manifest_yaml}')
+    print(f'selection_summary_csv: {artifacts.selection_summary_csv}')
+    print(f'selected_yaml: {artifacts.selected_yaml}')
+    print(f'entry_count: {artifacts.entry_count}')
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog='dynalloc-v2')
+    sub = p.add_subparsers(dest='cmd', required=True)
+
+    p_init = sub.add_parser('init-workspace')
+    p_init.add_argument('--root', default=None)
+    p_init.set_defaults(func=cmd_init_workspace)
+
+    p_replay = sub.add_parser('replay-sample')
+    p_replay.add_argument('--manifest', required=True)
+    p_replay.add_argument('--rank', type=int, default=1)
+    p_replay.add_argument('--sample', choices=['insample_full', 'selection_train', 'selection_validation'], default='insample_full')
+    p_replay.add_argument(
+        '--protocol',
+        default='fixed',
+        help='OOS protocol label for replay metadata. Supports fixed, expanding_annual, rolling20y_annual, rolling_selected_annual, selected_protocol, and rolling{N}m_annual.',
+    )
+    p_replay.add_argument('--block-label', default=None)
+    p_replay.add_argument('--out-dir', default=None)
+    p_replay.add_argument('--device', default=None)
+    p_replay.add_argument('--ppgdpo-mc-rollouts', type=int, default=None)
+    p_replay.add_argument('--ppgdpo-mc-sub-batch', type=int, default=None)
+    p_replay.set_defaults(func=cmd_replay_sample)
+
+    p_validate = sub.add_parser('validate')
+    p_validate.add_argument('--config', required=True)
+    p_validate.set_defaults(func=cmd_validate)
+
+    p_plan = sub.add_parser('plan')
+    p_plan.add_argument('--config', required=True)
+    p_plan.set_defaults(func=cmd_plan)
+
+    p_run = sub.add_parser('run')
+    p_run.add_argument('--config', required=True)
+    p_run.set_defaults(func=cmd_run)
+
+    p_raw_base = sub.add_parser('build-ff49-base-bundle')
+    p_raw_base.add_argument('--out-dir', required=True)
+    p_raw_base.add_argument('--search-root', default=None)
+    p_raw_base.add_argument('--ff49-zip', default=None)
+    p_raw_base.add_argument('--ff3-zip', default=None)
+    p_raw_base.add_argument('--ff5-zip', default=None)
+    p_raw_base.add_argument('--bond2y-csv', default=None)
+    p_raw_base.add_argument('--bond5y-csv', default=None)
+    p_raw_base.add_argument('--bond10y-csv', default=None)
+    p_raw_base.add_argument('--fred-cache-dir', default=None)
+    p_raw_base.add_argument('--fred-api-key', default=None)
+    p_raw_base.add_argument('--refresh-fred', action='store_true')
+    p_raw_base.add_argument('--macro-panel-csv', default=None)
+    p_raw_base.add_argument('--panel-start-date', default=None)
+    p_raw_base.add_argument('--panel-end-date', default=None)
+    p_raw_base.add_argument('--manifest-split-profile', choices=available_split_profiles(), default=DEFAULT_SPLIT_PROFILE)
+    p_raw_base.set_defaults(func=cmd_build_ff49_base_bundle)
+
+    p_native = sub.add_parser('select-native-suite')
+    p_native.add_argument('--base-dir', required=True)
+    p_native.add_argument('--out-dir', required=True)
+    p_native.add_argument('--factor-mode', choices=['ff5_curve_core', 'ff3_curve_core', 'ff5_only'], default='ff5_curve_core')
+    p_native.add_argument('--top-k', type=int, default=2, help='Final number of selected models written to the manifest after global stage2 reranking.')
+    p_native.add_argument('--stage1-top-k', type=int, default=None, help='How many spec-protocol pairs survive stage1 into stage2. Default: auto=max(top-k, rerank-top-n, 8).')
+    p_native.add_argument('--risk-aversion', type=float, default=5.0)
+    p_native.add_argument('--cv-folds', type=int, default=3)
+    p_native.add_argument('--min-train-months', type=int, default=204)
+    p_native.add_argument('--rolling-window', type=int, default=60)
+    p_native.add_argument('--window-mode', choices=['rolling', 'expanding'], default='rolling')
+    p_native.add_argument('--candidate-zoo', choices=['pls_only', 'factor_zoo_v1'], default='factor_zoo_v1')
+    p_native.add_argument('--max-candidates', type=int, default=None)
+    p_native.add_argument('--rerank-top-n', type=int, default=5)
+    p_native.add_argument('--selection-split-mode', choices=['trailing_holdout', 'expanding_cv'], default='trailing_holdout')
+    p_native.add_argument('--selection-val-months', type=int, default=240)
+    p_native.add_argument('--selection-device', default='cpu')
+    p_native.add_argument('--ppgdpo-lite-epochs', type=int, default=40)
+    p_native.add_argument('--ppgdpo-lite-mc-rollouts', type=int, default=256)
+    p_native.add_argument('--ppgdpo-lite-mc-sub-batch', type=int, default=256)
+    p_native.add_argument('--selection-transaction-cost-bps', type=float, default=0.0)
+    p_native.add_argument('--ppgdpo-lite-covariance-mode', choices=['full', 'diag'], default='full')
+    p_native.add_argument('--rerank-covariance-models', nargs='+', choices=['const', 'diag', 'dcc', 'adcc', 'regime_dcc'], default=['const', 'dcc', 'adcc', 'regime_dcc'])
+    p_native.add_argument('--selection-protocols', nargs='+', default=None, help='Integrated stage1/stage2 protocol candidates. Example: rolling240m_annual. If omitted, the default is a fixed 20-year rolling protocol built from --rolling-oos-window-grid.')
+    p_native.add_argument('--rolling-oos-window-grid', nargs='+', type=int, default=None, help='Integrated stage1/stage2 rolling annual window candidates in months. Default: 240. Warm-start semantics: early validation/OOS refits use the available history until the full window is reached.')
+    p_native.add_argument('--disable-rolling-oos-window-selection', action='store_true')
+    p_native.add_argument('--legacy-stage1-v1-root', default=None, help=argparse.SUPPRESS)
+    _add_split_override_args(p_native)
+    p_native.set_defaults(func=cmd_select_native_suite)
+
+    p_rank = sub.add_parser('run-rank-sweep')
+    p_rank.add_argument('--manifest', required=True)
+    p_rank.add_argument('--device', default=None)
+    p_rank.add_argument('--ppgdpo-mc-rollouts', type=int, default=None)
+    p_rank.add_argument('--ppgdpo-mc-sub-batch', type=int, default=None)
+    p_rank.add_argument(
+        '--oos-protocols',
+        nargs='+',
+        default=None,
+        help='Requested OOS protocols. Supports fixed, expanding_annual, rolling20y_annual, rolling_selected_annual, selected_protocol, and rolling{N}m_annual.',
+    )
+    p_rank.add_argument('--emit-legacy-fixed-layout', action='store_true')
+    p_rank.set_defaults(func=cmd_run_rank_sweep)
+
+    register_legacy_parsers(sub)
+    return p
+
+
+def main() -> int:
+    parser = build_parser()
+    argv = normalize_legacy_alias_argv(sys.argv[1:])
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

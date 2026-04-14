@@ -1,0 +1,67 @@
+Integrated PI-PINN backend patch for the PPGDPO code set
+========================================================
+
+Files changed / added
+---------------------
+1) pipinn_backend.py   [NEW]
+   - PDE-based PI-PINN backend adapted to the existing PPGDPO-fitted market objects.
+   - Uses the existing mean_model / transition / cross_est / cov_model objects.
+   - Trains a value net u(tau, x) by policy iteration over collocation points.
+   - Keeps DCC as a plug-in covariance process. The PI-PINN training covariance is frozen
+     within each refit window; runtime projected weights still use the live covariance forecast.
+   - Exposes a trainer object with:
+       * policy_weights(state_row, ...)
+       * estimate_costates(state_row, ...)
+       * train_objective
+
+2) schema.py          [MODIFIED]
+   - Adds:
+       optimizer_backend: "ppgdpo" | "pipinn"
+       pipinn: PIPINNConfig
+
+3) experiments.py     [MODIFIED]
+   - Adds backend selection in the PPGDPO experiment path.
+   - Existing rolling / expanding / fixed window logic is unchanged.
+   - Existing covariance model fitting is unchanged.
+   - Existing runtime projected policy logic is unchanged.
+   - Only the optimizer/trainer that produces value gradients/costates is swapped.
+
+How to activate
+---------------
+In your experiment YAML / config, set:
+
+  optimizer_backend: pipinn
+
+Optionally add a pipinn block, for example:
+
+  pipinn:
+    device: cpu
+    outer_iters: 6
+    eval_epochs: 120
+    n_train_int: 4096
+    n_train_bc: 1024
+    n_val_int: 2048
+    n_val_bc: 512
+    lr: 5.0e-4
+    width: 96
+    depth: 4
+    covariance_train_mode: dcc_current
+
+Important design choices
+------------------------
+- The outer experimental protocol is unchanged.
+- DCC/ADCC/regime-DCC are NOT promoted into PDE state variables.
+- The PDE state remains the explicit state vector already used by PPGDPO.
+- Full-matrix state drift is taken from the fitted transition matrix.
+- The PI-PINN backend uses a frozen training covariance inside one refit window.
+- Runtime projected weights continue to use the live covariance forecast from cov_model.predict(...).
+- The hedging covariance is still based on cross_est.cross (with the existing zero / regime_gated ablations).
+
+Current scope
+-------------
+- The main run_experiment(...) path is integrated.
+- Existing PPGDPO backend remains available and was smoke-tested after the patch.
+- A synthetic-data smoke test for the new PI-PINN backend was also run successfully.
+- I did NOT fully rewrite native_selection.py's unused direct stage2-lite helper paths; the primary
+  experiment runner integration is the main delivered patch.
+
