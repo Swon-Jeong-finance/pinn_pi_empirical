@@ -1,0 +1,26 @@
+version: v57_backend_native_labels
+optimizer_backend: pipinn
+strategy_label_map:
+  myopic: predictive_static
+  pipinn: ppgdpo
+  pipinn_zero: ppgdpo_zero
+  pipinn_regime_gated: ppgdpo_regime_gated
+comparison_roles:
+  myopic: reference_only
+  pipinn: method_candidate
+  pipinn_zero: method_candidate
+  pipinn_regime_gated: method_candidate
+  equal_weight: external_benchmark
+  min_variance: external_benchmark
+  risk_parity: external_benchmark
+reference_cross_mode_label: reference
+benchmark_cross_mode_label: benchmark
+include_standard_benchmarks: true
+standard_benchmarks:
+- equal_weight
+- min_variance
+- risk_parity
+notes:
+- myopic is the reference-only mean-variance benchmark
+- pipinn / pipinn_zero / pipinn_regime_gated are PI-PINN value-gradient projections
+  evaluated with the live runtime covariance forecast

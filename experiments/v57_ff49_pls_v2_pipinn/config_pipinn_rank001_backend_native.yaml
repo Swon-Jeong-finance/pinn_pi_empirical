@@ -1,0 +1,136 @@
+optimizer_backend: pipinn
+
+project:
+  name: ff49_pipinn_rank001_dcc_rolling240m_backend_native
+  output_dir: experiments/v57_ff49_pls_v2_pipinn_backend_native/rank_001/outputs
+
+experiment:
+  kind: ppgdpo
+
+data:
+  mode: csv
+  returns_csv: experiments/v57_ff49_pls_v2/rank_001/returns_panel.csv
+  states_csv: experiments/v57_ff49_pls_v2/rank_001/states_panel.csv
+  factors_csv: experiments/v57_ff49_pls_v2/rank_001/factors_panel.csv
+  date_col: date
+
+split:
+  train_start: '1964-01-01'
+  test_start: '2000-01-01'
+  end_date: '2019-12-31'
+  refit_every: 12
+  min_train_months: 72
+  train_window_mode: rolling
+  rolling_train_months: 240
+  rebalance_every: 1
+  protocol_label: rolling240m_annual
+
+state:
+  columns:
+    - state_PLS1
+    - state_PLS2
+
+factor_model:
+  extractor: provided
+  provided_factor_columns:
+    - PLS1
+    - PLS2
+
+mean_model:
+  kind: factor_apt
+  ridge_lambda: 1.0e-06
+  regime_threshold_quantile: 0.75
+  regime_sharpness: 8.0
+
+covariance_model:
+  kind: asset_dcc
+  ridge_lambda: 1.0e-06
+  variance_floor: 1.0e-06
+  correlation_shrink: 0.1
+  factor_correlation_mode: independent
+  use_persistence: false
+  dcc_alpha: 0.02
+  dcc_beta: 0.97
+  adcc_gamma: 0.005
+  variance_lambda: 0.97
+  asset_covariance_shrink: 0.1
+  regime_threshold_quantile: 0.75
+  regime_smoothing: 0.9
+  regime_sharpness: 8.0
+
+policy:
+  risk_aversion: 5.0
+  risky_cap: 1.0
+  cash_floor: 0.0
+  long_only: true
+  pgd_steps: 120
+  step_size: 0.05
+  turnover_penalty: 0.05
+
+ppgdpo:
+  device: cuda:1
+  hidden_dim: 32
+  hidden_layers: 2
+  epochs: 120
+  lr: 0.001
+  utility: crra
+  batch_size: 64
+  horizon_steps: 12
+  kappa: 1.0
+  mc_rollouts: 256
+  mc_sub_batch: 256
+  clamp_min_return: -0.95
+  clamp_port_ret_max: 5.0
+  clamp_wealth_min: 1.0e-08
+  clamp_state_std_abs: 8.0
+  covariance_mode: full
+  cross_strength: 1.0
+  eps_bar: 1.0e-06
+  newton_ridge: 1.0e-10
+  newton_tau: 0.95
+  newton_armijo: 0.0001
+  newton_backtrack: 0.5
+  max_newton: 30
+  tol_grad: 1.0e-08
+  max_line_search: 20
+  interior_margin: 1.0e-08
+  clamp_neg_jxx_min: 1.0e-12
+  train_seed: 17
+  state_ridge_lambda: 1.0e-06
+
+pipinn:
+  device: cuda:1
+  dtype: float64
+  outer_iters: 8
+  eval_epochs: 200
+  n_train_int: 4096
+  n_train_bc: 1024
+  n_val_int: 2048
+  n_val_bc: 512
+  p_uniform: 0.30
+  p_emp: 0.70
+  p_tau_near0: 0.30
+  lr: 5.0e-4
+  grad_clip: 1.0
+  w_bc: 20.0
+  w_bc_dx: 5.0
+  scheduler_factor: 0.5
+  scheduler_patience: 3
+  min_lr: 1.0e-5
+  width: 128
+  depth: 4
+  covariance_train_mode: dcc_current
+  x_domain_quantile_low: 0.001
+  x_domain_quantile_high: 0.999
+  x_domain_buffer: 0.20
+  emit_frozen_traincov_strategy: true
+  save_training_logs: true
+  show_progress: true
+  show_epoch_progress: false
+
+comparison:
+  cross_modes:
+    - estimated
+    - zero
+    - regime_gated
+  transaction_cost_bps: 0.0
