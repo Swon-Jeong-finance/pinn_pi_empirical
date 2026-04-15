@@ -9,6 +9,12 @@ import numpy as np
 import pandas as pd
 import yaml
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+
 from .schema import Config
 from .data import load_dataset
 from .factors import ProvidedFactorExtractor, PCAFactorExtractor, FactorRepresentation
@@ -268,7 +274,46 @@ def _protocol_constants(cfg: Config) -> dict[str, Any]:
         'fixed_train_end': str(cfg.split.fixed_train_end) if cfg.split.fixed_train_end is not None else None,
     }
 
+def _format_output_tag_value(value: Any) -> str:
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return 'nan'
+        return f'{value:.6g}'.replace('+', '')
+    return str(value)
 
+
+def _resolve_pipinn_output_dir(cfg: Config) -> Path:
+    base_dir = Path(cfg.project.output_dir)
+    if _optimizer_backend(cfg) != 'pipinn':
+        return base_dir
+    if not bool(getattr(cfg.pipinn, 'auto_output_subdir', False)):
+        return base_dir
+
+    default_fields = [
+        'outer_iters',
+        'eval_epochs',
+        'n_train_int',
+        'n_train_bc',
+        'p_uniform',
+        'p_emp',
+        'lr',
+        'w_bc',
+        'w_bc_dx',
+        'width',
+        'depth',
+    ]
+    fields = list(getattr(cfg.pipinn, 'output_tag_fields', []) or default_fields)
+    parts: list[str] = []
+    for field in fields:
+        if not hasattr(cfg.pipinn, field):
+            continue
+        raw = getattr(cfg.pipinn, field)
+        value = _format_output_tag_value(raw)
+        safe_value = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in value)
+        parts.append(f'{field}-{safe_value}')
+    if not parts:
+        return base_dir / 'pipinn_cfg'
+    return base_dir / ('pipinn_' + '__'.join(parts))
 
 
 def _fit_dynamic_policy_backend(
@@ -281,6 +326,7 @@ def _fit_dynamic_policy_backend(
     mean_model: MeanModelResult,
     cov_model: Any,
     transaction_cost: float,
+    progress_label: str | None = None,
 ) -> tuple[Any, Any, Any]:
     transition = fit_state_transition(state_train, state_train_next, ridge_lambda=cfg.ppgdpo.state_ridge_lambda)
     mu_train_pred = _predict_asset_means_over_sample(mean_model, state_train)
@@ -303,6 +349,7 @@ def _fit_dynamic_policy_backend(
             cross_est=cross_est,
             cov_model=cov_model,
             factor_repr=factor_repr,
+            progress_label=progress_label,
         )
     else:
         trainer = train_warmup_policy(
@@ -319,6 +366,8 @@ def _fit_dynamic_policy_backend(
 
 def _optimizer_backend(cfg: Config) -> str:
     return str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower()
+
+
 
 def _augment_summary(summary: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     out = summary.copy()
@@ -369,6 +418,57 @@ def _detect_market_factor_column(factors: pd.DataFrame | None, candidates: list[
         if hit is not None:
             return hit
     return None
+
+def _relative_output_path(path: Path | None, output_dir: Path) -> str | None:
+    if path is None:
+        return None
+    try:
+        return str(path.resolve().relative_to(output_dir.resolve()))
+    except Exception:  # noqa: BLE001
+        return str(path)
+
+
+def _write_pipinn_training_log(
+    output_dir: Path,
+    trainer: Any,
+    *,
+    decision_date: pd.Timestamp,
+    train_dates: pd.DatetimeIndex,
+    refit_index: int,
+) -> tuple[Path | None, dict[str, Any] | None]:
+    history = list(getattr(trainer, 'train_history', []) or [])
+    if not history:
+        return None, None
+    log_dir = ensure_dir(output_dir / 'training_logs' / 'pipinn')
+    csv_path = log_dir / f"refit_{int(refit_index):03d}_{pd.Timestamp(decision_date).strftime('%Y%m%d')}.csv"
+    train_start = pd.Timestamp(train_dates[0]) if len(train_dates) else pd.NaT
+    train_end = pd.Timestamp(train_dates[-1]) if len(train_dates) else pd.NaT
+    hist_df = pd.DataFrame(history)
+    hist_df.insert(0, 'refit_index', int(refit_index))
+    hist_df.insert(1, 'decision_date', pd.Timestamp(decision_date))
+    hist_df.insert(2, 'train_window_start', train_start)
+    hist_df.insert(3, 'train_window_end', train_end)
+    hist_df.to_csv(csv_path, index=False)
+    manifest_row = {
+        'refit_index': int(refit_index),
+        'decision_date': str(pd.Timestamp(decision_date).date()),
+        'train_window_start': str(train_start.date()) if pd.notna(train_start) else None,
+        'train_window_end': str(train_end.date()) if pd.notna(train_end) else None,
+        'epochs_logged': int(len(hist_df)),
+        'train_objective': float(getattr(trainer, 'train_objective', np.nan)),
+        'best_validation_loss': float(getattr(trainer, 'best_validation_loss', np.nan)),
+        'history_csv': _relative_output_path(csv_path, output_dir),
+    }
+    return csv_path, manifest_row
+
+
+def _write_pipinn_training_manifest(output_dir: Path, manifest_rows: list[dict[str, Any]]) -> Path | None:
+    if not manifest_rows:
+        return None
+    manifest_path = output_dir / 'training_logs' / 'pipinn_refit_manifest.csv'
+    ensure_dir(manifest_path.parent)
+    pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
+    return manifest_path
 
 
 def _strategy_display_label(strategy: str, cross_mode: str) -> str:
@@ -474,7 +574,9 @@ def _run_factorcov_experiment(cfg: Config) -> RunArtifacts:
     if missing_states:
         raise ValueError(f'Missing state columns: {missing_states}')
 
-    output_dir = ensure_dir(Path(cfg.project.output_dir))
+    # output_dir = ensure_dir(Path(cfg.project.output_dir))
+    output_dir = ensure_dir(_resolve_pipinn_output_dir(cfg))
+    cfg.project.output_dir = output_dir
     ensure_dir(output_dir / 'monthly')
     plan_yaml = _write_plan(cfg, output_dir)
     all_dates, eval_dates = _prepare_windows(cfg, returns)
@@ -634,11 +736,17 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     if missing_states:
         raise ValueError(f'Missing state columns: {missing_states}')
 
-    output_dir = ensure_dir(Path(cfg.project.output_dir))
+    # output_dir = ensure_dir(Path(cfg.project.output_dir))
+    output_dir = ensure_dir(_resolve_pipinn_output_dir(cfg))
+    cfg.project.output_dir = output_dir
     ensure_dir(output_dir / 'monthly')
     plan_yaml = _write_plan(cfg, output_dir)
     all_dates, eval_dates = _prepare_windows(cfg, returns)
 
+    backend = _optimizer_backend(cfg)
+    save_training_logs = backend == 'pipinn' and bool(getattr(cfg.pipinn, 'save_training_logs', False))
+    show_progress = backend == 'pipinn' and bool(getattr(cfg.pipinn, 'show_progress', False))
+    
     tc = cfg.comparison.transaction_cost_bps / 10000.0
     protocol_meta = _protocol_constants(cfg)
     cross_modes = list(dict.fromkeys(str(mode) for mode in cfg.comparison.cross_modes))
@@ -673,6 +781,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     last_costates = None
     last_proj_debug: dict[str, dict[str, Any]] = {mode: {'hedge_signal': np.zeros(returns.shape[1], dtype=float)} for mode in cross_modes}
     last_train_objective = np.nan
+    last_refit_step: int = 0
     last_meta: dict[str, Any] = {
         'mu_l1': np.nan,
         'factor_var_json': json.dumps({}),
@@ -680,7 +789,14 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         'mean_model_kind': cfg.mean_model.kind,
     }
 
-    for i, date_t in enumerate(eval_dates):
+    refit_counter = 0
+    training_manifest_rows: list[dict[str, Any]] = []
+    last_training_log_csv: str | None = None
+    last_training_window_start: str | None = None
+    last_training_window_end: str | None = None
+
+    eval_iterable = tqdm(eval_dates, desc=f"{backend}:{_protocol_label(cfg)}", unit='month') if show_progress else eval_dates
+    for i, date_t in enumerate(eval_iterable):
         pos = all_dates.get_loc(date_t)
         train_dates = _train_dates_for_decision(cfg, all_dates, pos)
         if len(train_dates) < cfg.split.min_train_months:
@@ -688,9 +804,13 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
 
         refit_now = _should_refit(cfg, i, cached)
         if refit_now:
+            refit_counter += 1
+            last_refit_step = i
+            
             state_train, state_train_next, ret_train_next, factor_repr, mean_model, cov_model = _fit_models_for_window(
                 cfg, states, returns, factors, train_dates
             )
+            progress_label = f"{pd.Timestamp(date_t).strftime('%Y-%m')} [{pd.Timestamp(train_dates[0]).strftime('%Y-%m')}→{pd.Timestamp(train_dates[-1]).strftime('%Y-%m')}]"
             _transition, cross_est, trainer = _fit_dynamic_policy_backend(
                 cfg,
                 state_train=state_train,
@@ -700,10 +820,24 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 mean_model=mean_model,
                 cov_model=cov_model,
                 transaction_cost=tc,
+                progress_label=progress_label,
             )
             sample_cov_train = _sample_covariance(ret_train_next)
             cached = (factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train)
             prev_mu_for_cov_update = None
+            last_training_window_start = str(pd.Timestamp(train_dates[0]).date()) if len(train_dates) else None
+            last_training_window_end = str(pd.Timestamp(train_dates[-1]).date()) if len(train_dates) else None
+            if save_training_logs:
+                training_log_path, manifest_row = _write_pipinn_training_log(
+                    output_dir,
+                    trainer,
+                    decision_date=pd.Timestamp(date_t),
+                    train_dates=train_dates,
+                    refit_index=refit_counter,
+                )
+                last_training_log_csv = _relative_output_path(training_log_path, output_dir)
+                if manifest_row is not None:
+                    training_manifest_rows.append(manifest_row)
         factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train = cached
         if (not refit_now) and prev_mu_for_cov_update is not None:
             cov_model.update_with_realized(returns.loc[date_t], prev_mu_for_cov_update)
@@ -723,6 +857,9 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         targets: dict[tuple[str, str], np.ndarray] = {}
         if rebalance_now:
             pgdpo_w = trainer.policy_weights(state_row)
+            # horizon_steps = int(cfg.ppgdpo.horizon_steps)
+            # tau_remaining = float(max(horizon_steps - (i - last_refit_step), 1))
+            # last_costates = trainer.estimate_costates(state_row, tau0=tau_remaining)
             last_costates = trainer.estimate_costates(state_row)
             last_train_objective = float(trainer.train_objective)
             predictive_static_w = solve_mean_variance(
@@ -815,6 +952,10 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'costate_closed_form': bool(last_costates.closed_form) if last_costates is not None else False,
                 'train_objective': float(last_train_objective) if np.isfinite(last_train_objective) else np.nan,
                 'regime_probability': float(regime_prob),
+                'training_log_csv': last_training_log_csv,
+                'training_window_start': last_training_window_start,
+                'training_window_end': last_training_window_end,
+                'refit_index': int(refit_counter),
             })
             holdings[(strategy, cross_mode)] = _drift_holdings(weights_for_return, realized_ret)
 
@@ -843,6 +984,10 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'costate_closed_form': False,
                 'train_objective': np.nan,
                 'regime_probability': float(regime_prob),
+                'training_log_csv': last_training_log_csv,
+                'training_window_start': last_training_window_start,
+                'training_window_end': last_training_window_end,
+                'refit_index': int(refit_counter),
             })
         prev_mu_for_cov_update = mu.reindex(returns.columns)
 
@@ -876,6 +1021,8 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     all_costs_summary = _augment_summary(_summarize(monthly, cfg.policy.risk_aversion, return_col='net_return', group_cols=group_cols), cfg)
     all_costs_summary.to_csv(output_dir / 'comparison_cross_modes_all_costs_summary.csv', index=False)
     monthly.to_csv(output_dir / 'comparison_results.csv', index=False)
+    if save_training_logs:
+        _write_pipinn_training_manifest(output_dir, training_manifest_rows)
 
     return RunArtifacts(
         output_dir=output_dir,

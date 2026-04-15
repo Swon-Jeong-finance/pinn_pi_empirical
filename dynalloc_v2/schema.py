@@ -173,6 +173,8 @@ class PIPINNConfig(BaseModel):
     save_training_logs: bool = True
     show_progress: bool = False
     show_epoch_progress: bool = False
+    auto_output_subdir: bool = False
+    output_tag_fields: list[str] = Field(default_factory=list)
 
 
 
