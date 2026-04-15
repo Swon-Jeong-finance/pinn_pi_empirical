@@ -1,0 +1,52 @@
+enabled: true
+candidate_mode: grid
+candidate_specs: []
+include_static_specs: true
+include_ff_split_specs: true
+include_alias_specs: false
+include_eqbond_block_specs: auto
+pca_prefixes:
+- pca_only
+- macro7_pca
+- ff5_macro7_pca
+pca_components:
+- 1
+- 2
+- 3
+- 4
+- 5
+pls_prefixes:
+- pls
+- pls_macro7
+- pls_ff5_macro7
+- pls_ret_macro7
+- pls_ret_ff5_macro7
+- pls_bal_ret_macro7
+- pls_bal_ret_ff5_macro7
+pls_horizons:
+- 6
+- 12
+- 24
+- 36
+- 48
+pls_components:
+- 1
+- 2
+- 3
+- 4
+- 5
+top_k: 1
+guarded_only: false
+rolling_window: 60
+return_baseline: expanding_mean
+state_baseline: expanding_mean
+return_floor: 0.0
+state_q10_floor: -0.05
+cross_warn: 0.95
+cross_fail: 0.98
+score_mode: method_shortlist
+score_ret_mean_weight: 0.45
+score_ret_q10_weight: 0.2
+score_state_mean_weight: 0.2
+score_state_q10_weight: 0.15
+output_subdir: selection

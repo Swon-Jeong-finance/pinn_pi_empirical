@@ -1,0 +1,7 @@
+asset_universe: ff25_szbm
+include_bond: true
+bond_source: crsp_csv
+bond_csv: data/bond10y_10y_fixedterm_monthly_monthend_min.csv
+bond_name: UST10Y
+bond_series_id: BAMLCC0A0CMTRIV
+bond_ret_col: bond10y_ret

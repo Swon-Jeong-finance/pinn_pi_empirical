@@ -1,0 +1,5 @@
+enabled: true
+spec_source: fixed
+fixed_spec: null
+cross_modes: []
+output_subdir: comparison

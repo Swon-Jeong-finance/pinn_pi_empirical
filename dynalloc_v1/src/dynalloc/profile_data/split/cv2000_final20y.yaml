@@ -1,0 +1,9 @@
+train_pool_start: '1964-01-01'
+train_pool_end: '1999-12-31'
+final_test_start: '2000-01-01'
+end_date: '2019-12-31'
+selection_cv_folds: 3
+selection_min_train_months: 204
+selection_val_months: 0
+force_common_calendar: true
+common_start_mode: suite

@@ -1,0 +1,10 @@
+asset_universe: custom
+custom_risky_assets:
+  - name: MKT
+    source: market_total_return
+include_bond: true
+bond_assets:
+  - name: UST10Y
+    source: crsp_csv
+    csv: data/bond10y.csv
+    ret_col: bond10y_ret

@@ -1,0 +1,6 @@
+train_pool_end: '2004-12-31'
+final_test_start: '2005-01-01'
+end_date: '2024-12-31'
+selection_cv_folds: 3
+selection_min_train_months: 204
+selection_val_months: 0
