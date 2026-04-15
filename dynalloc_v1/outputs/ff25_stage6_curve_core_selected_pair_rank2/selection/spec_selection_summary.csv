@@ -1,0 +1,3 @@
+spec,score,passes_guard,recommended
+best_spec,1.0,True,True
+second_spec,0.9,True,True
