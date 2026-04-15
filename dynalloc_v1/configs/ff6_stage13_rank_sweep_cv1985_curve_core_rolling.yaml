@@ -1,0 +1,53 @@
+experiment:
+  name: ff6_stage13_rank_sweep_cv1985_curve_core_rolling
+  output_dir: outputs/ff6_stage13_rank_sweep_cv1985_curve_core_rolling
+  notes: 'stage-13 FF6 CV-era symmetric universe matrix: core curve risky menu with
+    UST2Y/UST5Y/UST10Y | rolling walk-forward evaluation'
+universe:
+  profile: ff6_szbm_base
+  bond_hook: curve_core
+split:
+  profile: cv1985_final15y
+selection:
+  profile: cv1985_3fold_fullgrid_core_top2
+macro:
+  profile: bond_curve_core_cv
+model:
+  profile: base_estimated_pls3
+constraints:
+  profile: long_only_cash
+method:
+  profile: suite
+comparison:
+  profile: selected_rank1_cross_pair
+rank_sweep:
+  enabled: true
+  start_rank: 1
+  end_rank: 2
+  resume: true
+  stop_on_error: false
+training:
+  iters: 800
+  batch_size: 512
+  lr: 0.0003
+  gamma: 5.0
+  residual_policy: true
+  residual_ridge: 1.0e-06
+  ppgdpo_mc: 256
+  ppgdpo_subbatch: 64
+  ppgdpo_seed: 123
+evaluation:
+  walk_forward_mode: rolling
+  expanding_window: false
+  retrain_every: 12
+  refit_iters: 200
+  ppgdpo_allow_long_horizon: true
+  rolling_train_months: 432
+runtime:
+  backend: native_stage7
+  legacy_entrypoint: legacy/vendor/pgdpo_legacy_v69/run_french49_10y_model_based_latent_varx_fred.py
+  legacy_workdir: legacy/vendor/pgdpo_legacy_v69
+  seed: 0
+  device: cuda
+  dtype: float64
+  fred_api_key_env: FRED_API_KEY

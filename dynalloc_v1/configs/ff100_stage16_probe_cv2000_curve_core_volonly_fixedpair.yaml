@@ -1,0 +1,50 @@
+experiment:
+  name: ff100_stage16_probe_cv2000_curve_core_volonly_fixedpair
+  output_dir: outputs/ff100_stage16_probe_cv2000_curve_core_volonly_fixedpair
+  notes: stage-16 FF100 2000-2019 curve-core direct probe | vol-only macro with log_rv_mkt_1m
+    | fixed macro7_only comparison without selection
+universe:
+  profile: ff100_szbm_base
+  bond_hook: curve_core
+split:
+  profile: cv2000_final20y
+macro:
+  profile: rv_mkt_1m_only
+selection:
+  profile: disabled
+model:
+  profile: base_estimated_pls3
+constraints:
+  profile: long_only_cash
+method:
+  profile: suite
+comparison:
+  profile: fixed_base_model
+  fixed_spec: macro7_only
+  cross_modes:
+  - estimated
+  - zero
+training:
+  iters: 800
+  batch_size: 512
+  lr: 0.0003
+  gamma: 5.0
+  residual_policy: true
+  residual_ridge: 1.0e-06
+  ppgdpo_mc: 256
+  ppgdpo_subbatch: 64
+  ppgdpo_seed: 123
+evaluation:
+  walk_forward_mode: fixed
+  expanding_window: false
+  retrain_every: 12
+  refit_iters: 200
+  ppgdpo_allow_long_horizon: true
+runtime:
+  backend: native_stage6
+  legacy_entrypoint: legacy/vendor/pgdpo_legacy_v69/run_french49_10y_model_based_latent_varx_fred.py
+  legacy_workdir: legacy/vendor/pgdpo_legacy_v69
+  seed: 0
+  device: cuda
+  dtype: float64
+  fred_api_key_env: FRED_API_KEY
