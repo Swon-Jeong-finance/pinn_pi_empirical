@@ -1,0 +1,7 @@
+asset_universe: ff49ind
+include_bond: false
+bond_source: crsp_csv
+bond_csv: data/bond10y.csv
+bond_name: UST10Y
+bond_series_id: BAMLCC0A0CMTRIV
+bond_ret_col: bond10y_ret

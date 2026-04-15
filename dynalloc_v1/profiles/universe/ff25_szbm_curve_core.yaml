@@ -1,0 +1,15 @@
+asset_universe: ff25_szbm
+include_bond: true
+bond_assets:
+  - name: UST2Y
+    source: crsp_csv
+    csv: data/bond2y.csv
+    ret_col: ret2y
+  - name: UST5Y
+    source: crsp_csv
+    csv: data/bond5y.csv
+    ret_col: ret5y
+  - name: UST10Y
+    source: crsp_csv
+    csv: data/bond10y.csv
+    ret_col: bond10y_ret

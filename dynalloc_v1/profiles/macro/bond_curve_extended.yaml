@@ -1,0 +1,23 @@
+pool: bond_curve_extended
+feature_ids:
+  - infl_yoy
+  - term_spread
+  - default_spread
+  - core_infl_yoy
+  - indpro_yoy
+  - unrate_chg
+  - short_rate
+  - mprime
+  - gs2
+  - gs5
+  - gs10
+  - gs20
+  - slope_10y_2y
+  - slope_20y_5y
+  - curvature_2_5_10
+  - curvature_5_10_20
+  - umcsent
+macro3_columns:
+  - infl_yoy
+  - term_spread
+  - default_spread

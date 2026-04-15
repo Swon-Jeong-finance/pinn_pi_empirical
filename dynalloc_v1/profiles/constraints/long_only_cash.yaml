@@ -1,0 +1,6 @@
+enabled: true
+risky_cap: 1.0
+cash_floor: 0.0
+per_asset_cap: null
+allow_short: false
+short_floor: 0.0

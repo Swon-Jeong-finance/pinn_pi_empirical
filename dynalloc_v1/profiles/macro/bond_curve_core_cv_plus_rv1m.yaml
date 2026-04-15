@@ -1,0 +1,15 @@
+pool: custom
+feature_ids:
+  - infl_yoy
+  - term_spread
+  - default_spread
+  - indpro_yoy
+  - unrate_chg
+  - short_rate
+  - gs5
+  - gs10
+  - log_rv_mkt_1m
+macro3_columns:
+  - infl_yoy
+  - term_spread
+  - default_spread

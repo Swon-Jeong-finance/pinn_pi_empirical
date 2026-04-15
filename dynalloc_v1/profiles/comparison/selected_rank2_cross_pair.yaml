@@ -1,0 +1,7 @@
+enabled: true
+spec_source: selected
+selected_rank: 2
+cross_modes:
+  - estimated
+  - zero
+output_subdir: comparison

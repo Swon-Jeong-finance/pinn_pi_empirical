@@ -1,0 +1,9 @@
+train_policy: false
+evaluate_ppgdpo: false
+tc_sweep: true
+tc_bps:
+- 0.0
+- 5.0
+- 10.0
+- 25.0
+- 50.0

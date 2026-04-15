@@ -1,0 +1,6 @@
+state_spec: pls_H12_k3
+latent_k: 3
+pls_horizon: 12
+pls_smooth_span: 6
+cross_mode: estimated
+zero_cross_policy_proxy: full

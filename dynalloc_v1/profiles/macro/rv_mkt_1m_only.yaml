@@ -1,0 +1,5 @@
+pool: custom
+feature_ids:
+  - log_rv_mkt_1m
+macro3_columns:
+  - log_rv_mkt_1m
