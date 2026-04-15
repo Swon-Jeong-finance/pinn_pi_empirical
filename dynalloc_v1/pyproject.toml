@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynalloc-v1"
+version = "0.16.0"
+description = "Stage-15 cv2006 fixed-18 release for curve-aware empirical dynamic allocation experiments."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.6",
+  "PyYAML>=6.0",
+  "pandas>=2.0",
+]
+
+[project.scripts]
+dynalloc = "dynalloc.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dynalloc = ["profile_data/**/*.yaml"]

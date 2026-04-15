@@ -1,0 +1,3 @@
+recursive-include src/dynalloc/profile_data *.yaml
+recursive-include profiles *.yaml
+include README.md
