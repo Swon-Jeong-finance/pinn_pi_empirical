@@ -1,0 +1,44 @@
+experiment:
+  name: ff49_stage5_curve_core_zero_cross_fixed_suite
+  output_dir: outputs/ff49_stage5_curve_core_zero_cross_fixed_suite
+  notes: stage-5 zero-cross fixed-spec FF49 curve-core suite
+universe:
+  profile: ff49ind_curve_core
+macro:
+  profile: bond_curve_core
+model:
+  profile: base_zero_pls3
+constraints:
+  profile: long_only_cash
+method:
+  profile: suite
+split:
+  profile: pre2005_final20y
+selection:
+  profile: disabled
+comparison:
+  profile: fixed_base_model
+  fixed_spec: ff5_macro7_pca_k3
+training:
+  iters: 800
+  batch_size: 512
+  lr: 0.0003
+  gamma: 5.0
+  residual_policy: true
+  residual_ridge: 1.0e-06
+  ppgdpo_mc: 256
+  ppgdpo_subbatch: 64
+  ppgdpo_seed: 123
+evaluation:
+  expanding_window: false
+  retrain_every: 12
+  refit_iters: 200
+  ppgdpo_allow_long_horizon: true
+runtime:
+  backend: native_stage5
+  legacy_entrypoint: legacy/vendor/pgdpo_legacy_v69/run_french49_10y_model_based_latent_varx_fred.py
+  legacy_workdir: legacy/vendor/pgdpo_legacy_v69
+  seed: 0
+  device: cuda
+  dtype: float64
+  fred_api_key_env: FRED_API_KEY
