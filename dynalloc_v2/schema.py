@@ -68,6 +68,7 @@ class MeanModelConfig(BaseModel):
 
 class CovarianceModelConfig(BaseModel):
     kind: Literal['constant', 'state_diagonal', 'state_only_diagonal', 'asset_dcc', 'asset_adcc', 'asset_regime_dcc'] = 'asset_dcc'
+    cross_covariance_kind: Literal['sample', 'dcc', 'adcc', 'regime_dcc', 'auto'] = 'auto'
     ridge_lambda: float = 1.0e-6
     variance_floor: float = 1.0e-6
     correlation_shrink: float = 0.10

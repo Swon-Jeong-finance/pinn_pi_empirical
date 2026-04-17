@@ -95,6 +95,21 @@ def _build_cov_model(cfg: Config):
         use_persistence=use_persistence,
     )
 
+def _resolve_dynamic_cross_kind(cfg: Config) -> str | None:
+    cross_kind = str(getattr(cfg.covariance_model, 'cross_covariance_kind', 'sample') or 'sample').lower()
+    if cross_kind == 'sample':
+        return None
+    if cross_kind in {'dcc', 'adcc', 'regime_dcc'}:
+        return cross_kind
+    cov_kind = str(cfg.covariance_model.kind).lower()
+    if cov_kind == 'asset_dcc':
+        return 'dcc'
+    if cov_kind == 'asset_adcc':
+        return 'adcc'
+    if cov_kind == 'asset_regime_dcc':
+        return 'regime_dcc'
+    return None
+
 
 def _write_plan(cfg: Config, output_dir: Path) -> Path:
     ensure_dir(output_dir)
@@ -330,12 +345,23 @@ def _fit_dynamic_policy_backend(
 ) -> tuple[Any, Any, Any]:
     transition = fit_state_transition(state_train, state_train_next, ridge_lambda=cfg.ppgdpo.state_ridge_lambda)
     mu_train_pred = _predict_asset_means_over_sample(mean_model, state_train)
+    dynamic_cross_kind = _resolve_dynamic_cross_kind(cfg)
     cross_est = estimate_return_state_cross(
         returns_tp1=ret_train_next,
         returns_mean_pred=mu_train_pred,
         states_t=state_train,
         states_tp1=state_train_next,
         transition=transition,
+        dynamic_cross_kind=dynamic_cross_kind,
+        variance_floor=cfg.covariance_model.variance_floor,
+        correlation_shrink=cfg.covariance_model.correlation_shrink,
+        dcc_alpha=cfg.covariance_model.dcc_alpha,
+        dcc_beta=cfg.covariance_model.dcc_beta,
+        adcc_gamma=cfg.covariance_model.adcc_gamma,
+        variance_lambda=cfg.covariance_model.variance_lambda,
+        regime_threshold_quantile=cfg.covariance_model.regime_threshold_quantile,
+        regime_smoothing=cfg.covariance_model.regime_smoothing,
+        regime_sharpness=cfg.covariance_model.regime_sharpness,
     )
     backend = str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower()
     if backend == 'pipinn':
@@ -777,6 +803,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     }
     monthly_rows: list[dict[str, object]] = []
     prev_mu_for_cov_update: pd.Series | None = None
+    prev_state_pred_for_cross: pd.Series | None = None
     cached = None
     last_costates = None
     last_proj_debug: dict[str, dict[str, Any]] = {mode: {'hedge_signal': np.zeros(returns.shape[1], dtype=float)} for mode in cross_modes}
@@ -826,8 +853,10 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 tau_max=tau_remaining if backend == 'pipinn' else None,
             )
             sample_cov_train = _sample_covariance(ret_train_next)
-            cached = (factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train)
+            # cached = (factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train)
+            cached = (factor_repr, mean_model, cov_model, _transition, cross_est, trainer, sample_cov_train)
             prev_mu_for_cov_update = None
+            prev_state_pred_for_cross = None
             last_training_window_start = str(pd.Timestamp(train_dates[0]).date()) if len(train_dates) else None
             last_training_window_end = str(pd.Timestamp(train_dates[-1]).date()) if len(train_dates) else None
             if save_training_logs:
@@ -841,9 +870,18 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 last_training_log_csv = _relative_output_path(training_log_path, output_dir)
                 if manifest_row is not None:
                     training_manifest_rows.append(manifest_row)
-        factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train = cached
+        # factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train = cached
+        factor_repr, mean_model, cov_model, transition_model, cross_est, trainer, sample_cov_train = cached
+        
         if (not refit_now) and prev_mu_for_cov_update is not None:
             cov_model.update_with_realized(returns.loc[date_t], prev_mu_for_cov_update)
+            if cross_est.dynamic_model is not None and prev_state_pred_for_cross is not None:
+                cross_est.dynamic_model.update_with_realized(
+                    realized_return=returns.loc[date_t].to_numpy(dtype=float),
+                    predicted_return_mean=prev_mu_for_cov_update.to_numpy(dtype=float),
+                    realized_state=states.loc[date_t, cfg.state.columns].to_numpy(dtype=float),
+                    predicted_state=prev_state_pred_for_cross.to_numpy(dtype=float),
+                )
 
         state_row = states.loc[date_t, cfg.state.columns]
         latest_factor_return = _latest_factor_return_row(cfg, factors, factor_repr, pd.Timestamp(date_t))
@@ -881,7 +919,8 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 steps=max(250, cfg.policy.pgd_steps),
                 step_size=cfg.policy.step_size,
             )
-            cross_base = cross_est.cross.to_numpy(dtype=float)
+            cross_sample = cross_est.cross.to_numpy(dtype=float)
+            cross_base = cross_est.dynamic_model.current_cross_covariance() if cross_est.dynamic_model is not None else cross_sample
             zero_cross = np.zeros_like(cross_base)
             regime_gated_cross = (1.0 - regime_prob) * cross_base
             cross_lookup = {
@@ -1001,6 +1040,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'refit_index': int(refit_counter),
             })
         prev_mu_for_cov_update = mu.reindex(returns.columns)
+        prev_state_pred_for_cross = transition_model.predict(state_row).reindex(cfg.state.columns)
 
     monthly = pd.DataFrame(monthly_rows)
     if monthly.empty:

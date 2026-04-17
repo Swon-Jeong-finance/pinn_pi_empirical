@@ -527,12 +527,14 @@ def _config_covariance_payload_from_label(label: str) -> dict[str, Any]:
             'kind': 'constant',
             'factor_correlation_mode': 'sample_shrunk',
             'use_persistence': False,
+            'cross_covariance_kind': 'sample',
         }
     if label == 'diag':
         return {
             'kind': 'state_only_diagonal',
             'factor_correlation_mode': 'independent',
             'use_persistence': False,
+            'cross_covariance_kind': 'sample',
         }
     if label == 'dcc':
         return {
@@ -540,6 +542,7 @@ def _config_covariance_payload_from_label(label: str) -> dict[str, Any]:
             'factor_correlation_mode': 'independent',
             'use_persistence': False,
             'adcc_gamma': 0.005,
+            'cross_covariance_kind': 'dcc',
         }
     if label == 'adcc':
         return {
@@ -550,6 +553,7 @@ def _config_covariance_payload_from_label(label: str) -> dict[str, Any]:
             'regime_threshold_quantile': 0.75,
             'regime_smoothing': 0.90,
             'regime_sharpness': 8.0,
+            'cross_covariance_kind': 'adcc',
         }
     if label == 'regime_dcc':
         return {
@@ -560,6 +564,7 @@ def _config_covariance_payload_from_label(label: str) -> dict[str, Any]:
             'regime_threshold_quantile': 0.75,
             'regime_smoothing': 0.90,
             'regime_sharpness': 8.0,
+            'cross_covariance_kind': 'regime_dcc',
         }
     raise KeyError(f'Unsupported covariance label {label!r}')
 
