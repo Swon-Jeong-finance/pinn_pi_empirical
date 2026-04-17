@@ -1446,6 +1446,12 @@ def _summary_scalar(summary: pd.DataFrame, *, strategy: str, cross_mode: str, co
         'predictive_static': ['predictive_static', 'myopic'],
         'policy': ['policy', 'pgdpo'],
         'pgdpo': ['pgdpo', 'policy'],
+        'ppgdpo': ['ppgdpo', 'pipinn'],
+        'ppgdpo_zero': ['ppgdpo_zero', 'pipinn_zero'],
+        'ppgdpo_regime_gated': ['ppgdpo_regime_gated', 'pipinn_regime_gated'],
+        'pipinn': ['pipinn', 'ppgdpo'],
+        'pipinn_zero': ['pipinn_zero', 'ppgdpo_zero'],
+        'pipinn_regime_gated': ['pipinn_regime_gated', 'ppgdpo_regime_gated'],
     }
     cross_aliases = {
         'estimated': ['estimated', 'reference'],

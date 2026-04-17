@@ -393,7 +393,8 @@ def _fit_dynamic_policy_backend(
 def _optimizer_backend(cfg: Config) -> str:
     return str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower()
 
-
+def _emit_pipinn_frozen_traincov_strategy(cfg: Config) -> bool:
+    return _optimizer_backend(cfg) == 'pipinn' and bool(getattr(cfg.pipinn, 'emit_frozen_traincov_strategy', False))
 
 def _augment_summary(summary: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     out = summary.copy()
@@ -497,53 +498,94 @@ def _write_pipinn_training_manifest(output_dir: Path, manifest_rows: list[dict[s
     return manifest_path
 
 
-def _strategy_display_label(strategy: str, cross_mode: str) -> str:
+def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_source: str = '') -> dict[str, Any]:
     strategy = str(strategy)
     cross_mode = str(cross_mode)
-    if strategy == 'ppgdpo':
-        if cross_mode == 'estimated':
-            return 'ppgdpo'
-        if cross_mode == 'zero':
-            return 'ppgdpo_zero'
-        if cross_mode == 'regime_gated':
-            return 'ppgdpo_regime_gated'
-        return f'ppgdpo_{cross_mode}'
-    return strategy
-
-
-def _strategy_metadata(strategy: str, cross_mode: str, *, market_source: str = '') -> dict[str, Any]:
-    strategy = str(strategy)
-    cross_mode = str(cross_mode)
-    display = _strategy_display_label(strategy, cross_mode)
-    legacy = {'predictive_static': 'myopic', 'pgdpo': 'policy'}.get(strategy, strategy)
+    backend = str(backend).lower()
     if strategy == 'predictive_static':
-        role = 'reference_only'
-        note = 'reference-only, not a primary benchmark'
-        primary = False
-    elif strategy == 'pgdpo':
-        role = 'method_ablation'
-        note = 'warmup direct policy ablation; useful for mechanism comparison'
-        primary = False
-    elif strategy == 'ppgdpo':
-        role = 'method_candidate'
-        note = 'Pontryagin projection candidate'
-        primary = False
-    else:
-        role = 'external_benchmark'
-        primary = True
-        if strategy == 'market':
-            note = f'market benchmark source: {market_source or "unspecified"}'
-        else:
-            note = 'standard external benchmark'
+        return {
+            'strategy': 'myopic',
+            'cross_mode': cross_mode,
+            'strategy_display': 'myopic',
+            'strategy_legacy_label': 'predictive_static',
+            'comparison_role': 'reference_only',
+            'benchmark_primary': False,
+            'benchmark_note': 'reference-only myopic benchmark',
+            'benchmark_source': '',
+        }
+    if strategy == 'pgdpo':
+        if backend == 'pipinn':
+            return {
+                'strategy': 'pipinn_traincov_diag',
+                'cross_mode': 'estimated',
+                'strategy_display': 'pipinn_traincov_diag',
+                'strategy_legacy_label': 'pgdpo',
+                'comparison_role': 'method_diagnostic',
+                'benchmark_primary': False,
+                'benchmark_note': 'PI-PINN trainer-default projection with frozen train-window covariance and estimated cross',
+                'benchmark_source': '',
+            }
+        return {
+            'strategy': 'pgdpo',
+            'cross_mode': cross_mode,
+            'strategy_display': 'pgdpo',
+            'strategy_legacy_label': 'pgdpo',
+            'comparison_role': 'method_ablation',
+            'benchmark_primary': False,
+            'benchmark_note': 'warmup direct policy output before Pontryagin projection',
+            'benchmark_source': '',
+        }
+    if strategy == 'ppgdpo':
+        if backend == 'pipinn':
+            mapping = {
+                'estimated': ('pipinn', 'pipinn', 'ppgdpo', 'PI-PINN value-gradient projection with estimated cross'),
+                'zero': ('pipinn_zero', 'pipinn_zero', 'ppgdpo_zero', 'PI-PINN value-gradient projection with zero cross'),
+                'regime_gated': ('pipinn_regime_gated', 'pipinn_regime_gated', 'ppgdpo_regime_gated', 'PI-PINN value-gradient projection with regime-gated cross'),
+            }
+            out_name, out_display, legacy_name, note = mapping.get(
+                cross_mode,
+                (f'pipinn_{cross_mode}', f'pipinn_{cross_mode}', f'ppgdpo_{cross_mode}', 'PI-PINN projected strategy'),
+            )
+            return {
+                'strategy': out_name,
+                'cross_mode': cross_mode,
+                'strategy_display': out_display,
+                'strategy_legacy_label': legacy_name,
+                'comparison_role': 'method_candidate',
+                'benchmark_primary': False,
+                'benchmark_note': note,
+                'benchmark_source': '',
+            }
+        mapping = {
+            'estimated': ('ppgdpo', 'ppgdpo', 'Pontryagin projection candidate with estimated cross'),
+            'zero': ('ppgdpo_zero', 'ppgdpo_zero', 'Pontryagin projection candidate with zero cross'),
+            'regime_gated': ('ppgdpo_regime_gated', 'ppgdpo_regime_gated', 'Pontryagin projection candidate with regime-gated cross'),
+        }
+        out_name, out_display, note = mapping.get(
+            cross_mode,
+            (f'ppgdpo_{cross_mode}', f'ppgdpo_{cross_mode}', 'Pontryagin projection candidate'),
+        )
+        return {
+            'strategy': out_name,
+            'cross_mode': cross_mode,
+            'strategy_display': out_display,
+            'strategy_legacy_label': out_name,
+            'comparison_role': 'method_candidate',
+            'benchmark_primary': False,
+            'benchmark_note': note,
+            'benchmark_source': '',
+        }
+    note = f'market benchmark source: {market_source or "unspecified"}' if strategy == 'market' else 'standard external benchmark'
     return {
-        'strategy_display': display,
-        'strategy_legacy_label': legacy,
-        'comparison_role': role,
-        'benchmark_primary': bool(primary),
+        'strategy': strategy,
+        'cross_mode': cross_mode,
+        'strategy_display': strategy,
+        'strategy_legacy_label': strategy,
+        'comparison_role': 'external_benchmark',
+        'benchmark_primary': True,
         'benchmark_note': note,
         'benchmark_source': market_source if strategy == 'market' else '',
     }
-
 
 def _write_benchmark_notes(
     output_dir: Path,
@@ -562,16 +604,28 @@ def _write_benchmark_notes(
     }
     benchmark_roles.update({name: 'external_benchmark' for name in standard_benchmarks})
 
-    payload = {
-        'version': 'v56',
-        'optimizer_backend': str(backend).lower(),
-        'strategy_label_map': {
-            'myopic': 'predictive_static',
-            'policy': 'pgdpo',
+strategy_label_map = {
+        'myopic': 'predictive_static',
+        'policy': 'pgdpo',
+    }
+    if str(backend).lower() == 'pipinn':
+        strategy_label_map.update({
+            'pipinn': 'ppgdpo',
+            'pipinn_zero': 'ppgdpo_zero',
+            'pipinn_regime_gated': 'ppgdpo_regime_gated',
+            'pipinn_traincov_diag': 'pgdpo',
+        })
+    else:
+        strategy_label_map.update({
             'ppgdpo': 'ppgdpo',
             'ppgdpo_zero': 'ppgdpo_zero',
             'ppgdpo_regime_gated': 'ppgdpo_regime_gated',
-        },
+        })
+        
+    payload = {
+        'version': 'v56',
+        'optimizer_backend': str(backend).lower(),
+        'strategy_label_map': strategy_label_map,
         'comparison_roles': benchmark_roles,
         'reference_cross_mode_label': reference_cross_mode,
         'benchmark_cross_mode_label': benchmark_cross_mode,
@@ -770,6 +824,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     all_dates, eval_dates = _prepare_windows(cfg, returns)
 
     backend = _optimizer_backend(cfg)
+    emit_pipinn_frozen_traincov = _emit_pipinn_frozen_traincov_strategy(cfg)
     save_training_logs = backend == 'pipinn' and bool(getattr(cfg.pipinn, 'save_training_logs', False))
     show_progress = backend == 'pipinn' and bool(getattr(cfg.pipinn, 'show_progress', False))
     
@@ -786,7 +841,9 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     market_factor_col = _detect_market_factor_column(factors, list(getattr(cfg.comparison, 'market_factor_candidates', [])))
     market_source = f'factor:{market_factor_col}' if market_factor_col is not None else 'equal_weight_proxy'
 
-    weight_strategy_slots: list[tuple[str, str]] = [('predictive_static', reference_cross_mode), ('pgdpo', reference_cross_mode)]
+    weight_strategy_slots: list[tuple[str, str]] = [('predictive_static', reference_cross_mode)]
+    if backend == 'ppgdpo' or emit_pipinn_frozen_traincov:
+        weight_strategy_slots.append(('pgdpo', reference_cross_mode))
     weight_strategy_slots.extend([('ppgdpo', cross_mode) for cross_mode in cross_modes])
     for benchmark_name in ['equal_weight', 'min_variance', 'risk_parity']:
         if benchmark_name in benchmark_set:
@@ -982,13 +1039,12 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             gross = float(weights_for_return @ realized_ret)
             net = gross - tc * turnover
             proj_debug = last_proj_debug.get(cross_mode, {'hedge_signal': np.zeros(returns.shape[1], dtype=float)}) if strategy == 'ppgdpo' else {'hedge_signal': np.zeros(returns.shape[1], dtype=float)}
+            meta = _strategy_metadata(strategy, cross_mode, backend=backend, market_source=market_source)
             monthly_rows.append({
                 **protocol_meta,
                 'decision_date': pd.Timestamp(date_t),
                 'return_date': pd.Timestamp(next_date),
-                'strategy': strategy,
-                'cross_mode': cross_mode,
-                **_strategy_metadata(strategy, cross_mode, market_source=market_source),
+                **meta,
                 'gross_return': gross,
                 'net_return': net,
                 'turnover': turnover,
@@ -1014,13 +1070,12 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             if factors is not None and market_factor_col is not None and next_date in factors.index:
                 market_excess = float(factors.loc[next_date, market_factor_col])
             gross = float(effective_risky_cap * market_excess) if np.isfinite(market_excess) else np.nan
+            meta = _strategy_metadata(strategy, cross_mode, backend=backend, market_source=market_source)
             monthly_rows.append({
                 **protocol_meta,
                 'decision_date': pd.Timestamp(date_t),
                 'return_date': pd.Timestamp(next_date),
-                'strategy': strategy,
-                'cross_mode': cross_mode,
-                **_strategy_metadata(strategy, cross_mode, market_source=market_source),
+                **meta,
                 'gross_return': gross,
                 'net_return': gross,
                 'turnover': 0.0,
