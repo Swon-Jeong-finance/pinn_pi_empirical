@@ -342,6 +342,7 @@ def _fit_dynamic_policy_backend(
     cov_model: Any,
     transaction_cost: float,
     progress_label: str | None = None,
+    tau_max: float | None = None,
 ) -> tuple[Any, Any, Any]:
     transition = fit_state_transition(state_train, state_train_next, ridge_lambda=cfg.ppgdpo.state_ridge_lambda)
     mu_train_pred = _predict_asset_means_over_sample(mean_model, state_train)
@@ -376,6 +377,7 @@ def _fit_dynamic_policy_backend(
             cov_model=cov_model,
             factor_repr=factor_repr,
             progress_label=progress_label,
+            tau_max=tau_max,
         )
     else:
         trainer = train_warmup_policy(
@@ -604,7 +606,7 @@ def _write_benchmark_notes(
     }
     benchmark_roles.update({name: 'external_benchmark' for name in standard_benchmarks})
 
-strategy_label_map = {
+    strategy_label_map = {
         'myopic': 'predictive_static',
         'policy': 'pgdpo',
     }
