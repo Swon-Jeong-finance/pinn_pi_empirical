@@ -796,6 +796,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     last_training_window_end: str | None = None
 
     eval_iterable = tqdm(eval_dates, desc=f"{backend}:{_protocol_label(cfg)}", unit='month') if show_progress else eval_dates
+    eval_horizon_months = int(max(len(eval_dates), 1))
     for i, date_t in enumerate(eval_iterable):
         pos = all_dates.get_loc(date_t)
         train_dates = _train_dates_for_decision(cfg, all_dates, pos)
@@ -803,6 +804,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             continue
 
         refit_now = _should_refit(cfg, i, cached)
+        tau_remaining = float(max(eval_horizon_months - i, 1))
         if refit_now:
             refit_counter += 1
             last_refit_step = i
@@ -821,6 +823,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 cov_model=cov_model,
                 transaction_cost=tc,
                 progress_label=progress_label,
+                tau_max=tau_remaining if backend == 'pipinn' else None,
             )
             sample_cov_train = _sample_covariance(ret_train_next)
             cached = (factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train)
@@ -856,11 +859,19 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         rebalance_now = _should_rebalance(cfg, i)
         targets: dict[tuple[str, str], np.ndarray] = {}
         if rebalance_now:
-            pgdpo_w = trainer.policy_weights(state_row)
+            if backend == 'pipinn':
+                pgdpo_w = trainer.policy_weights(state_row, tau=tau_remaining)
+            else:
+                pgdpo_w = trainer.policy_weights(state_row)
+            # pgdpo_w = trainer.policy_weights(state_row)
             # horizon_steps = int(cfg.ppgdpo.horizon_steps)
             # tau_remaining = float(max(horizon_steps - (i - last_refit_step), 1))
             # last_costates = trainer.estimate_costates(state_row, tau0=tau_remaining)
-            last_costates = trainer.estimate_costates(state_row)
+            # last_costates = trainer.estimate_costates(state_row)
+            if backend == 'pipinn':
+                last_costates = trainer.estimate_costates(state_row, tau0=tau_remaining)
+            else:
+                last_costates = trainer.estimate_costates(state_row)
             last_train_objective = float(trainer.train_objective)
             predictive_static_w = solve_mean_variance(
                 mu_arr,

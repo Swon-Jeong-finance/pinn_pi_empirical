@@ -153,11 +153,11 @@ class ValueNet(nn.Module):
         self.mlp = _MLP(in_dim=1 + x_min.shape[1], out_dim=1, hidden_dim=int(width), hidden_layers=int(depth))
 
     def forward(self, tau: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        tau_n = 2.0 * (tau / self.tau_max) - 1.0
-        x_min = self.x_min.to(dtype=x.dtype, device=x.device)
-        x_max = self.x_max.to(dtype=x.dtype, device=x.device)
-        x_n = 2.0 * (x - x_min) / torch.clamp(x_max - x_min, min=1.0e-8) - 1.0
-        inp = torch.cat([tau_n, x_n], dim=1)
+        # tau_n = 2.0 * (tau / self.tau_max) - 1.0
+        # x_min = self.x_min.to(dtype=x.dtype, device=x.device)
+        # x_max = self.x_max.to(dtype=x.dtype, device=x.device)
+        # x_n = 2.0 * (x - x_min) / torch.clamp(x_max - x_min, min=1.0e-8) - 1.0
+        inp = torch.cat([tau, x], dim=1)
         return self.mlp(inp)
 
 
@@ -637,6 +637,7 @@ def train_pipinn_policy(
     cov_model: Any,
     factor_repr: Any,
     progress_label: str | None = None,
+    tau_max: float | None = None,
 ) -> TrainedPIPINN:
     del transaction_cost
     if states_t.shape[1] <= 0:
@@ -658,7 +659,10 @@ def train_pipinn_policy(
         loadings=factor_repr.loadings,
         residual_var=factor_repr.residual_var,
     )
-    tau_max = float(max(int(cfg.ppgdpo.horizon_steps), 1))
+    # tau_max = float(max(int(cfg.ppgdpo.horizon_steps), 1))
+    tau_max_cfg = int(cfg.ppgdpo.horizon_steps)
+    tau_cap = tau_max_cfg if tau_max is None else int(np.ceil(float(tau_max)))
+    tau_max = float(max(tau_cap, 1))
     env = PIPINNEnvFromPPGDPO(
         mean_model=mean_model,
         transition=transition,
