@@ -127,7 +127,9 @@ class SelectionLitePPGDPOConfig:
     pipinn_n_val_bc: int = 512
     pipinn_p_uniform: float = 0.30
     pipinn_p_emp: float = 0.70
-    pipinn_p_tau_near0: float = 0.30
+    pipinn_p_tau_head: float = 0.50
+    pipinn_p_tau_near0: float = 0.20
+    pipinn_tau_head_window: int = 0
     pipinn_lr: float = 5.0e-4
     pipinn_grad_clip: float = 1.0
     pipinn_w_bc: float = 20.0
@@ -993,7 +995,9 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             n_val_bc=int(lite_cfg.pipinn_n_val_bc),
             p_uniform=float(lite_cfg.pipinn_p_uniform),
             p_emp=float(lite_cfg.pipinn_p_emp),
+            p_tau_head=float(lite_cfg.pipinn_p_tau_head),
             p_tau_near0=float(lite_cfg.pipinn_p_tau_near0),
+            tau_head_window=int(lite_cfg.pipinn_tau_head_window),
             lr=float(lite_cfg.pipinn_lr),
             grad_clip=float(lite_cfg.pipinn_grad_clip),
             w_bc=float(lite_cfg.pipinn_w_bc),
@@ -1024,7 +1028,9 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'n_val_bc': int(lite_cfg.pipinn_n_val_bc),
         'p_uniform': float(lite_cfg.pipinn_p_uniform),
         'p_emp': float(lite_cfg.pipinn_p_emp),
+        'p_tau_head': float(lite_cfg.pipinn_p_tau_head),
         'p_tau_near0': float(lite_cfg.pipinn_p_tau_near0),
+        'tau_head_window': int(lite_cfg.pipinn_tau_head_window),
         'lr': float(lite_cfg.pipinn_lr),
         'grad_clip': float(lite_cfg.pipinn_grad_clip),
         'w_bc': float(lite_cfg.pipinn_w_bc),
@@ -1404,7 +1410,9 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.n_val_bc = int(lite_cfg.pipinn_n_val_bc)
         out.pipinn.p_uniform = float(lite_cfg.pipinn_p_uniform)
         out.pipinn.p_emp = float(lite_cfg.pipinn_p_emp)
+        out.pipinn.p_tau_head = float(lite_cfg.pipinn_p_tau_head)
         out.pipinn.p_tau_near0 = float(lite_cfg.pipinn_p_tau_near0)
+        out.pipinn.tau_head_window = int(lite_cfg.pipinn_tau_head_window)
         out.pipinn.lr = float(lite_cfg.pipinn_lr)
         out.pipinn.grad_clip = float(lite_cfg.pipinn_grad_clip)
         out.pipinn.w_bc = float(lite_cfg.pipinn_w_bc)
@@ -1795,7 +1803,9 @@ def native_select_factor_suite(
     pipinn_n_val_bc: int = 512,
     pipinn_p_uniform: float = 0.30,
     pipinn_p_emp: float = 0.70,
-    pipinn_p_tau_near0: float = 0.30,
+    pipinn_p_tau_head: float = 0.50,
+    pipinn_p_tau_near0: float = 0.20,
+    pipinn_tau_head_window: int = 0,
     pipinn_lr: float = 5.0e-4,
     pipinn_grad_clip: float = 1.0,
     pipinn_w_bc: float = 20.0,
@@ -1906,7 +1916,9 @@ def native_select_factor_suite(
         pipinn_n_val_bc=int(pipinn_n_val_bc),
         pipinn_p_uniform=float(pipinn_p_uniform),
         pipinn_p_emp=float(pipinn_p_emp),
+        pipinn_p_tau_head=float(pipinn_p_tau_head),
         pipinn_p_tau_near0=float(pipinn_p_tau_near0),
+        pipinn_tau_head_window=int(pipinn_tau_head_window),
         pipinn_lr=float(pipinn_lr),
         pipinn_grad_clip=float(pipinn_grad_clip),
         pipinn_w_bc=float(pipinn_w_bc),

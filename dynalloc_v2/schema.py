@@ -156,7 +156,9 @@ class PIPINNConfig(BaseModel):
     n_val_bc: int = 512
     p_uniform: float = 0.30
     p_emp: float = 0.70
-    p_tau_near0: float = 0.30
+    p_tau_head: float = 0.50
+    p_tau_near0: float = 0.20
+    tau_head_window: int = 0
     lr: float = 5.0e-4
     grad_clip: float = 1.0
     w_bc: float = 20.0

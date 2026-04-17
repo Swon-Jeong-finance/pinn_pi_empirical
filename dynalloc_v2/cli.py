@@ -162,7 +162,9 @@ def cmd_select_native_suite(args):
         pipinn_n_val_bc=args.pipinn_n_val_bc,
         pipinn_p_uniform=args.pipinn_p_uniform,
         pipinn_p_emp=args.pipinn_p_emp,
+        pipinn_p_tau_head=args.pipinn_p_tau_head,
         pipinn_p_tau_near0=args.pipinn_p_tau_near0,
+        pipinn_tau_head_window=args.pipinn_tau_head_window,
         pipinn_lr=args.pipinn_lr,
         pipinn_grad_clip=args.pipinn_grad_clip,
         pipinn_w_bc=args.pipinn_w_bc,
@@ -258,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--stage1-top-k', type=int, default=None, help='How many spec-protocol pairs survive stage1 into stage2. Default: auto=max(top-k, rerank-top-n, 8).')
     p_native.add_argument('--risk-aversion', type=float, default=5.0)
     p_native.add_argument('--cv-folds', type=int, default=3)
-    p_native.add_argument('--min-train-months', type=int, default=204)
+    p_native.add_argument('--min-train-months', type=int, default=192)
     p_native.add_argument('--rolling-window', type=int, default=60)
     p_native.add_argument('--window-mode', choices=['rolling', 'expanding'], default='rolling')
     p_native.add_argument('--candidate-zoo', choices=['pls_only', 'factor_zoo_v1'], default='factor_zoo_v1')
@@ -272,21 +274,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--ppgdpo-lite-mc-sub-batch', type=int, default=256)
     p_native.add_argument('--selection-transaction-cost-bps', type=float, default=0.0)
     p_native.add_argument('--ppgdpo-lite-covariance-mode', choices=['full', 'diag'], default='full')
+    
     p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn'], default='ppgdpo')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
     p_native.add_argument('--pipinn-outer-iters', type=int, default=10)
     p_native.add_argument('--pipinn-eval-epochs', type=int, default=100)
-    p_native.add_argument('--pipinn-n-train-int', type=int, default=2048)
-    p_native.add_argument('--pipinn-n-train-bc', type=int, default=512)
-    p_native.add_argument('--pipinn-n-val-int', type=int, default=1024)
-    p_native.add_argument('--pipinn-n-val-bc', type=int, default=256)
+    p_native.add_argument('--pipinn-n-train-int', type=int, default=4096)
+    p_native.add_argument('--pipinn-n-train-bc', type=int, default=1024)
+    p_native.add_argument('--pipinn-n-val-int', type=int, default=2048)
+    p_native.add_argument('--pipinn-n-val-bc', type=int, default=512)
     p_native.add_argument('--pipinn-p-uniform', type=float, default=0.70)
     p_native.add_argument('--pipinn-p-emp', type=float, default=0.30)
-    p_native.add_argument('--pipinn-p-tau-near0', type=float, default=0.30)
+    p_native.add_argument('--pipinn-p-tau-head', type=float, default=0.50)
+    p_native.add_argument('--pipinn-p-tau-near0', type=float, default=0.20)
+    p_native.add_argument('--pipinn-tau-head-window', type=int, default=0)
     p_native.add_argument('--pipinn-lr', type=float, default=5.0e-4)
     p_native.add_argument('--pipinn-grad-clip', type=float, default=1.0)
-    p_native.add_argument('--pipinn-w-bc', type=float, default=10.0)
+    p_native.add_argument('--pipinn-w-bc', type=float, default=20.0)
     p_native.add_argument('--pipinn-w-bc-dx', type=float, default=5.0)
     p_native.add_argument('--pipinn-scheduler-factor', type=float, default=0.5)
     p_native.add_argument('--pipinn-scheduler-patience', type=int, default=3)

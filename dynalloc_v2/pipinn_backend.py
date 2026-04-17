@@ -153,10 +153,6 @@ class ValueNet(nn.Module):
         self.mlp = _MLP(in_dim=1 + x_min.shape[1], out_dim=1, hidden_dim=int(width), hidden_layers=int(depth))
 
     def forward(self, tau: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        # tau_n = 2.0 * (tau / self.tau_max) - 1.0
-        # x_min = self.x_min.to(dtype=x.dtype, device=x.device)
-        # x_max = self.x_max.to(dtype=x.dtype, device=x.device)
-        # x_n = 2.0 * (x - x_min) / torch.clamp(x_max - x_min, min=1.0e-8) - 1.0
         inp = torch.cat([tau, x], dim=1)
         return self.mlp(inp)
 
@@ -402,7 +398,9 @@ def _sample_collocation(
     n_bc: int,
     p_uniform: float,
     p_emp: float,
+    p_tau_head: float,
     p_tau_near0: float,
+    tau_head_window: int,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     rng = np.random.default_rng(seed)
@@ -418,9 +416,25 @@ def _sample_collocation(
 
     u = rng.uniform(size=n_int)
     tau = np.empty(n_int, dtype=float)
-    mask_uniform_tau = u < (1.0 - float(np.clip(p_tau_near0, 0.0, 1.0)))
+    p_tau_head = float(np.clip(p_tau_head, 0.0, 1.0))
+    p_tau_near0 = float(np.clip(p_tau_near0, 0.0, 1.0))
+    p_tau_uniform = float(max(1.0 - p_tau_head - p_tau_near0, 0.0))
+    s_tau = p_tau_head + p_tau_near0 + p_tau_uniform
+    if s_tau <= 0.0:
+        p_tau_head, p_tau_near0, p_tau_uniform = 0.0, 0.0, 1.0
+    else:
+        p_tau_head /= s_tau
+        p_tau_near0 /= s_tau
+        p_tau_uniform /= s_tau
+
+    head_window = float(max(int(tau_head_window), 1))
+    tau_head_lo = float(max(env.tau_max - head_window, 0.0))
+    mask_head_tau = u < p_tau_head
+    mask_near0_tau = (u >= p_tau_head) & (u < (p_tau_head + p_tau_near0))
+    mask_uniform_tau = ~(mask_head_tau | mask_near0_tau)
+    tau[mask_head_tau] = rng.uniform(tau_head_lo, env.tau_max, size=int(mask_head_tau.sum()))
+    tau[mask_near0_tau] = rng.beta(0.5, 1.0, size=int(mask_near0_tau.sum())) * env.tau_max
     tau[mask_uniform_tau] = rng.uniform(0.0, env.tau_max, size=int(mask_uniform_tau.sum()))
-    tau[~mask_uniform_tau] = rng.beta(0.5, 1.0, size=int((~mask_uniform_tau).sum())) * env.tau_max
 
     x = np.empty((n_int, env.n_states), dtype=float)
     mix = rng.uniform(size=n_int)
@@ -650,6 +664,11 @@ def train_pipinn_policy(
     else:
         device = str(cfg.pipinn.device or cfg.ppgdpo.device)
     dtype = torch.float64 if str(cfg.pipinn.dtype).lower() == 'float64' else torch.float32
+    tau_head_window_cfg = int(getattr(cfg.pipinn, 'tau_head_window', 0) or 0)
+    if tau_head_window_cfg <= 0:
+        tau_head_window_eff = int(max(int(getattr(cfg.split, 'refit_every', 1) or 1), 1))
+    else:
+        tau_head_window_eff = tau_head_window_cfg
     sigma_train = _select_training_covariance(
         cfg=cfg,
         cov_model=cov_model,
@@ -695,7 +714,9 @@ def train_pipinn_policy(
         n_bc=int(cfg.pipinn.n_val_bc),
         p_uniform=float(cfg.pipinn.p_uniform),
         p_emp=float(cfg.pipinn.p_emp),
+        p_tau_head=float(cfg.pipinn.p_tau_head),
         p_tau_near0=float(cfg.pipinn.p_tau_near0),
+        tau_head_window=tau_head_window_eff,
         seed=train_seed + 999,
     )
     val_taub = torch.tensor(taub_val_np, device=device, dtype=dtype)
@@ -718,7 +739,9 @@ def train_pipinn_policy(
             n_bc=int(cfg.pipinn.n_train_bc),
             p_uniform=float(cfg.pipinn.p_uniform),
             p_emp=float(cfg.pipinn.p_emp),
+            p_tau_head=float(cfg.pipinn.p_tau_head),
             p_tau_near0=float(cfg.pipinn.p_tau_near0),
+            tau_head_window=tau_head_window_eff,
             seed=train_seed + it,
         )
         train_taub = torch.tensor(taub_tr_np, device=device, dtype=dtype)
