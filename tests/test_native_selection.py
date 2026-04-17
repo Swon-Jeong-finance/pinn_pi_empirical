@@ -12,10 +12,14 @@ from dynalloc_v2.native_selection import (
     _annotate_stage2_real_ppgdpo_scores,
     _build_cv_blocks,
     _build_selection_blocks,
+    _config_covariance_payload_from_label,
+    _comparison_cross_modes_for_covariance_label,
+    _expand_stage2_model_specs,
     _legacy_spec_name_for_candidate,
     _selection_score_mean_first,
     _selection_score_ppgdpo_lite,
     _selection_score_ret_first,
+    SelectionStage2ModelSpec,
     native_select_factor_suite,
 )
 
@@ -100,7 +104,37 @@ def test_factor_zoo_registry_is_large_enough():
     assert 'pls_ret_ff5_macro7_H6_k2' in names
     assert 'ff5_pcares_k2' in names
 
+def test_cross_mode_mapping_and_stage2_expansion_and_cross_estimator_payload():
+    assert _comparison_cross_modes_for_covariance_label('dcc') == ['estimated', 'zero']
+    assert _comparison_cross_modes_for_covariance_label('adcc') == ['estimated', 'zero']
+    assert _comparison_cross_modes_for_covariance_label('regime_dcc') == ['estimated', 'zero', 'regime_gated']
 
+    specs = _expand_stage2_model_specs([
+        SelectionStage2ModelSpec(
+            label='adcc',
+            base_covariance_label='adcc',
+            covariance_model_kind='asset_adcc',
+            factor_correlation_mode='independent',
+            use_persistence=False,
+        ),
+        SelectionStage2ModelSpec(
+            label='regime_dcc',
+            base_covariance_label='regime_dcc',
+            covariance_model_kind='asset_regime_dcc',
+            factor_correlation_mode='independent',
+            use_persistence=False,
+        ),
+    ])
+    by_base: dict[str, set[str]] = {}
+    for spec in specs:
+        by_base.setdefault(str(spec.base_covariance_label), set()).add(str(spec.cross_policy_label))
+    assert by_base['adcc'] == {'estimated', 'zero'}
+    assert by_base['regime_dcc'] == {'estimated', 'zero', 'regime_gated'}
+
+    assert _config_covariance_payload_from_label('const')['cross_covariance_kind'] == 'sample'
+    assert _config_covariance_payload_from_label('dcc')['cross_covariance_kind'] == 'dcc'
+    assert _config_covariance_payload_from_label('adcc')['cross_covariance_kind'] == 'adcc'
+    assert _config_covariance_payload_from_label('regime_dcc')['cross_covariance_kind'] == 'regime_dcc'
 
 
 def test_legacy_spec_name_mapping_matches_v1_specs():
