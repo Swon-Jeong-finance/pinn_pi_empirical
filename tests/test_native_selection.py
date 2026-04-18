@@ -543,3 +543,36 @@ def test_native_factor_zoo_selects_validation_rolling_window(tmp_path: Path):
     metadata = yaml.safe_load(Path(entry['metadata_yaml']).read_text(encoding='utf-8'))
     assert metadata['selected_rolling_train_months'] in {24, 36}
     assert metadata['selected_oos_protocols']['rolling_selected_annual']['rolling_train_months'] in {24, 36}
+
+def test_extract_validation_metrics_maps_pipinn_zero_to_ppgdpo_zero():
+    """Regression test for the NaN-in-validation_ce_zero bug.
+
+    `_strategy_metadata` writes the zero-cross baseline as strategy='pipinn_zero'
+    when the PI-PINN backend is active. `_extract_validation_protocol_metrics`
+    must still find it when it queries the zero baseline.
+    """
+    from dynalloc_v2.native_selection import _extract_validation_protocol_metrics
+
+    summary = pd.DataFrame([
+        {'strategy': 'pipinn',      'strategy_legacy_label': 'ppgdpo',
+         'strategy_display': 'pipinn',      'cross_mode': 'estimated',
+         'cer_ann': 0.110, 'sharpe': 1.10, 'months': 240, 'avg_turnover': 0.30, 'max_drawdown': -0.12},
+        {'strategy': 'pipinn_zero', 'strategy_legacy_label': 'ppgdpo_zero',
+         'strategy_display': 'pipinn_zero', 'cross_mode': 'zero',
+         'cer_ann': 0.090, 'sharpe': 0.95, 'months': 240, 'avg_turnover': 0.25, 'max_drawdown': -0.15},
+        {'strategy': 'myopic',      'strategy_legacy_label': 'predictive_static',
+         'strategy_display': 'myopic',      'cross_mode': 'reference',
+         'cer_ann': 0.080, 'sharpe': 0.85, 'months': 240, 'avg_turnover': 0.10, 'max_drawdown': -0.18},
+    ])
+
+    out = _extract_validation_protocol_metrics(summary, cross_mode='estimated')
+    assert np.isfinite(out['validation_ce_est'])
+    assert np.isfinite(out['validation_ce_zero'])           # ← 버그 재현 방지
+    assert np.isfinite(out['validation_ce_delta_zero'])     # ← 이게 V56 rerank의 핵심 신호
+    assert out['validation_ce_delta_zero'] == pytest.approx(0.110 - 0.090)
+    assert out['validation_score'] > -1000.0               # 페널티 영역 탈출 확인
+
+    # zero-cross variant가 own-candidate로 들어올 때도 잡혀야 함
+    out_zero = _extract_validation_protocol_metrics(summary, cross_mode='zero')
+    assert np.isfinite(out_zero['validation_ce_est'])      # pipinn_zero 행을 찾아야 함
+    assert out_zero['validation_ce_est'] == pytest.approx(0.090)
