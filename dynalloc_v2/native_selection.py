@@ -1442,6 +1442,18 @@ def _set_config_window_from_block(cfg: Config, block: dict[str, Any]) -> Config:
     out.split.min_train_months = max(12, min(int(out.split.min_train_months), len(train_dates)))
     return out
 
+def _ppgdpo_strategy_for_cross_mode(cross_mode: str) -> str:
+    """Map a cross_mode label to the canonical PPGDPO strategy name.
+
+    `_strategy_metadata` writes the projected strategy as 'ppgdpo' / 'pipinn'
+    only when cross_mode='estimated'. For 'zero' and 'regime_gated' the
+    strategy column is suffixed ('ppgdpo_zero', 'pipinn_zero', ...), so the
+    summary lookup must use the suffixed name to hit the alias table.
+    """
+    cm = str(cross_mode).lower()
+    if cm in {'zero', 'regime_gated'}:
+        return f'ppgdpo_{cm}'
+    return 'ppgdpo'
 
 def _summary_scalar(summary: pd.DataFrame, *, strategy: str, cross_mode: str, column: str) -> float:
     if summary.empty or column not in summary.columns:
@@ -1487,11 +1499,14 @@ def _summary_scalar(summary: pd.DataFrame, *, strategy: str, cross_mode: str, co
             return float(value) if pd.notna(value) else float('nan')
     return float('nan')
 
-
 def _extract_validation_protocol_metrics(summary: pd.DataFrame, *, cross_mode: str = 'estimated') -> dict[str, Any]:
     cross_mode = str(cross_mode)
-    ce_candidate = _summary_scalar(summary, strategy='ppgdpo', cross_mode=cross_mode, column='cer_ann')
-    ce_zero = _summary_scalar(summary, strategy='ppgdpo', cross_mode='zero', column='cer_ann')
+    # The projected candidate strategy is written with a cross_mode-dependent
+    # suffix (e.g. 'ppgdpo_zero' / 'pipinn_zero'). We must query the
+    # summary with the suffixed name so that the alias table kicks in.
+    candidate_strategy = _ppgdpo_strategy_for_cross_mode(cross_mode)
+    ce_candidate = _summary_scalar(summary, strategy=candidate_strategy, cross_mode=cross_mode, column='cer_ann')
+    ce_zero = _summary_scalar(summary, strategy='ppgdpo_zero', cross_mode='zero', column='cer_ann')
     ce_predictive_static = _summary_scalar(summary, strategy='predictive_static', cross_mode='reference', column='cer_ann')
     benchmark_ce = {
         benchmark_name: _summary_scalar(summary, strategy=benchmark_name, cross_mode='benchmark', column='cer_ann')
@@ -1509,7 +1524,7 @@ def _extract_validation_protocol_metrics(summary: pd.DataFrame, *, cross_mode: s
         _delta_vs(ce_zero),
     )
     out = {
-        'validation_months': _summary_scalar(summary, strategy='ppgdpo', cross_mode=cross_mode, column='months'),
+        'validation_months': _summary_scalar(summary, strategy=candidate_strategy, cross_mode=cross_mode, column='months'),
         'validation_ce_est': ce_candidate,
         'validation_ce_predictive_static': ce_predictive_static,
         'validation_ce_myopic': ce_predictive_static,
@@ -1517,9 +1532,9 @@ def _extract_validation_protocol_metrics(summary: pd.DataFrame, *, cross_mode: s
         'validation_ce_delta_predictive_static': _delta_vs(ce_predictive_static),
         'validation_ce_delta_myopic': _delta_vs(ce_predictive_static),
         'validation_ce_delta_zero': _delta_vs(ce_zero),
-        'validation_sharpe_est': _summary_scalar(summary, strategy='ppgdpo', cross_mode=cross_mode, column='sharpe'),
-        'validation_turnover_est': _summary_scalar(summary, strategy='ppgdpo', cross_mode=cross_mode, column='avg_turnover'),
-        'validation_max_drawdown_est': _summary_scalar(summary, strategy='ppgdpo', cross_mode=cross_mode, column='max_drawdown'),
+        'validation_sharpe_est': _summary_scalar(summary, strategy=candidate_strategy, cross_mode=cross_mode, column='sharpe'),
+        'validation_turnover_est': _summary_scalar(summary, strategy=candidate_strategy, cross_mode=cross_mode, column='avg_turnover'),
+        'validation_max_drawdown_est': _summary_scalar(summary, strategy=candidate_strategy, cross_mode=cross_mode, column='max_drawdown'),
         'validation_score': score,
         'validation_cross_mode': cross_mode,
     }
