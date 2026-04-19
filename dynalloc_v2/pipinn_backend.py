@@ -153,6 +153,7 @@ class ValueNet(nn.Module):
         self.mlp = _MLP(in_dim=1 + x_min.shape[1], out_dim=1, hidden_dim=int(width), hidden_layers=int(depth))
 
     def forward(self, tau: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        # tau = torch.log1p(tau)  # log(1 + τ), τ=240이면 약 5.48
         inp = torch.cat([tau, x], dim=1)
         return self.mlp(inp)
 
@@ -526,7 +527,50 @@ def _precompute_policy_coeffs(
     Bcoef = (1.0 - env.gamma) * torch.matmul(pi, env.C_train_t)
     return _BatchPolicyCoefficients(tau=tau.detach(), x=x.detach(), A=A.detach(), Bcoef=Bcoef.detach())
 
+def _compute_gradient_diagnostics(
+    model_u: ValueNet,
+    x: torch.Tensor,
+    tau: torch.Tensor,
+) -> dict[str, float]:
+    """
+    State 방향 gradient ∇_x u의 분포 특성을 계산.
 
+    - grad_l2_mean/std/cv: 샘플마다 ||∇_x u||의 크기 분포.
+      cv(variation coefficient)가 작으면 gradient 크기가 state에 거의 무관 → spectral bias 증거.
+    - grad_dir_cos_mean: 서로 다른 state 샘플 간 gradient 방향의 cosine similarity.
+      1에 가까우면 gradient 방향이 거의 상수 → policy가 state에 반응 안 함 → spectral bias의 결정적 지표.
+
+    evaluation 시점이라 create_graph=False.
+    """
+    with torch.enable_grad():
+        x_req = x.detach().clone().requires_grad_(True)
+        tau_req = tau.detach().clone()
+        u_pred = model_u(tau_req, x_req)
+        grad = torch.autograd.grad(
+            u_pred, x_req, grad_outputs=torch.ones_like(u_pred),
+            create_graph=False, retain_graph=False,
+        )[0]
+    # 크기 분포
+    grad_l2 = grad.norm(dim=1)  # [B]
+    l2_mean = float(grad_l2.mean().item())
+    l2_std = float(grad_l2.std().item())
+    l2_cv = l2_std / (l2_mean + 1e-9)
+    # 방향 분포: 단위 벡터들 간 평균 pairwise cosine
+    g_unit = grad / (grad.norm(dim=1, keepdim=True) + 1e-9)
+    cos_mat = g_unit @ g_unit.T  # [B, B]
+    # 상삼각만 (대각 제외): 평균 pairwise cosine
+    B = cos_mat.shape[0]
+    if B > 1:
+        mask = torch.triu(torch.ones(B, B, dtype=torch.bool, device=cos_mat.device), diagonal=1)
+        cos_mean = float(cos_mat[mask].mean().item())
+    else:
+        cos_mean = float('nan')
+    return {
+        'grad_l2_mean': l2_mean,
+        'grad_l2_std': l2_std,
+        'grad_l2_cv': float(l2_cv),
+        'grad_dir_cos_mean': cos_mean,
+    }
 
 
 def _policy_evaluation(
@@ -592,6 +636,8 @@ def _policy_evaluation(
             u_x_bc_v = torch.autograd.grad(u_bc_v, xb_v, grad_outputs=torch.ones_like(u_bc_v), create_graph=False)[0]
             val_bc_dx = torch.mean(torch.sum(u_x_bc_v * u_x_bc_v, dim=1, keepdim=True))
             val_total = val_pde + float(w_bc) * val_bc + float(w_bc_dx) * val_bc_dx
+            # --- 진단 지표 (spectral bias detector) ---
+            diag = _compute_gradient_diagnostics(model_u, val_coeff.x, val_coeff.tau)
         cur_val = float(val_total.item())
         hist.append({
             'epoch_in_outer': int(epoch_in_outer),
@@ -604,6 +650,11 @@ def _policy_evaluation(
             'val_pde': float(val_pde.item()),
             'val_bc': float(val_bc.item()),
             'val_bc_dx': float(val_bc_dx.item()),
+            # --- 진단 지표 ---
+            'val_grad_l2_mean':     diag['grad_l2_mean'],
+            'val_grad_l2_std':      diag['grad_l2_std'],
+            'val_grad_l2_cv':       diag['grad_l2_cv'],
+            'val_grad_dir_cos_mean': diag['grad_dir_cos_mean'],
         })
         if show_progress and hasattr(epoch_iter, 'set_postfix'):
             epoch_iter.set_postfix({'val': f'{cur_val:.3e}'})
