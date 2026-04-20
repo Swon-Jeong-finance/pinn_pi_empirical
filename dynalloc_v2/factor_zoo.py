@@ -71,12 +71,56 @@ def default_factor_zoo_registry() -> list[FactorZooCandidate]:
                 specs.append(FactorZooCandidate(name=f'{family}_H{horizon}_k{k}', kind='pls', horizon=horizon, n_components=k, feature_blocks=blocks))
     return specs
 
+def default_factor_zoo_v2_registry() -> list[FactorZooCandidate]:
+    """Extended v2 zoo: adds short-horizon (H=1,2,3) and k=1 PLS variants
+    for 'pls' and 'pls_ret_ff5_curve_macro7' families only. Other families
+    keep the standard (H∈{6,12,24}) × (k∈{2,3}) grid.
+    Matches the candidate set used in v57 ppgdpo runs.
+    """
+    specs: list[FactorZooCandidate] = []
+    specs.extend([
+        FactorZooCandidate(name='ff1', kind='provided', provided_source='ff1'),
+        FactorZooCandidate(name='ff3', kind='provided', provided_source='ff3'),
+        FactorZooCandidate(name='ff5', kind='provided', provided_source='ff5'),
+        FactorZooCandidate(name='ff3_curve_core', kind='provided', provided_source='ff3_curve_core'),
+        FactorZooCandidate(name='ff5_curve_core', kind='provided', provided_source='ff5_curve_core'),
+    ])
+    for k in (1, 2, 3, 4):
+        specs.append(FactorZooCandidate(name=f'pca_k{k}', kind='pca', n_components=k))
+    for base in ('ff3', 'ff5'):
+        for k in (1, 2):
+            specs.append(FactorZooCandidate(name=f'{base}_pcares_k{k}', kind='resid_pca', residual_base=base, residual_k=k))
+
+    standard_grid = [(h, k) for h in (6, 12, 24) for k in (2, 3)]
+    extended_grid = [
+        (1, 1), (1, 2),
+        (2, 1), (2, 2),
+        (3, 1), (3, 2),
+        (6, 1), (6, 2), (6, 3),
+        (12, 2), (12, 3),
+        (24, 2), (24, 3),
+    ]
+    families: list[tuple[str, tuple[str, ...], list[tuple[int, int]]]] = [
+        ('pls',                      ('returns',),                                 extended_grid),
+        ('pls_ret_macro7',           ('returns', 'macro7'),                        standard_grid),
+        ('pls_ret_ff5_macro7',       ('returns', 'ff5', 'macro7'),                 standard_grid),
+        ('pls_ret_ff5_curve_macro7', ('returns', 'ff5', 'curve_core', 'macro7'),   extended_grid),
+    ]
+    for family, blocks, grid in families:
+        for horizon, k in grid:
+            specs.append(FactorZooCandidate(
+                name=f'{family}_H{horizon}_k{k}',
+                kind='pls', horizon=horizon, n_components=k, feature_blocks=blocks,
+            ))
+    return specs
 
 def build_candidate_registry(zoo: str) -> list[FactorZooCandidate]:
     if zoo == 'pls_only':
         return default_pls_candidate_registry()
     if zoo == 'factor_zoo_v1':
         return default_factor_zoo_registry()
+    if zoo == 'factor_zoo_v2':
+        return default_factor_zoo_v2_registry()
     raise KeyError(f'Unknown candidate zoo {zoo!r}')
 
 
