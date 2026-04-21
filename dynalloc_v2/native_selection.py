@@ -140,6 +140,7 @@ class SelectionLitePPGDPOConfig:
     pipinn_width: int = 96
     pipinn_depth: int = 4
     pipinn_covariance_train_mode: str = 'dcc_current'
+    pipinn_policy_output_mode: str = 'projection'
     pipinn_emit_frozen_traincov_strategy: bool = False
     pipinn_save_training_logs: bool = True
     pipinn_show_progress: bool = False
@@ -417,9 +418,12 @@ def _annotate_stage2_real_ppgdpo_scores(stage2_df: pd.DataFrame, stage1_selected
             stage2_df[rank_col] = series.fillna(0.0)
 
     stage2_df['stage2_real_ppgdpo_score'] = (
+        # 0.65 * stage2_df['stage2_rank_ppgdpo_score']
+        # + 0.20 * stage2_df['stage2_rank_ppgdpo_q10']
+        # + 0.15 * stage2_df['stage2_rank_hedging_gain']
         0.65 * stage2_df['stage2_rank_ppgdpo_score']
-        + 0.20 * stage2_df['stage2_rank_ppgdpo_q10']
-        + 0.15 * stage2_df['stage2_rank_hedging_gain']
+        + 0.10 * stage2_df['stage2_rank_ppgdpo_q10']
+        + 0.25 * stage2_df['stage2_rank_hedging_gain']
     )
     stage2_df['stage2_mean_first_score'] = stage2_df['stage2_real_ppgdpo_score']
     stage2_df['stage2_sort_score'] = stage2_df['stage2_real_ppgdpo_score'].where(np.isfinite(stage2_df['stage2_real_ppgdpo_score']), -np.inf)
@@ -1041,6 +1045,7 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'width': int(lite_cfg.pipinn_width),
         'depth': int(lite_cfg.pipinn_depth),
         'covariance_train_mode': str(lite_cfg.pipinn_covariance_train_mode),
+        'policy_output_mode': str(lite_cfg.pipinn_policy_output_mode),
         'emit_frozen_traincov_strategy': bool(lite_cfg.pipinn_emit_frozen_traincov_strategy),
         'save_training_logs': bool(lite_cfg.pipinn_save_training_logs),
         'show_progress': bool(lite_cfg.pipinn_show_progress),
@@ -1423,6 +1428,7 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.width = int(lite_cfg.pipinn_width)
         out.pipinn.depth = int(lite_cfg.pipinn_depth)
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
+        out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
         out.pipinn.emit_frozen_traincov_strategy = bool(lite_cfg.pipinn_emit_frozen_traincov_strategy)
         out.pipinn.save_training_logs = bool(lite_cfg.pipinn_save_training_logs)
         out.pipinn.show_progress = bool(lite_cfg.pipinn_show_progress)
@@ -1831,6 +1837,7 @@ def native_select_factor_suite(
     pipinn_width: int = 96,
     pipinn_depth: int = 4,
     pipinn_covariance_train_mode: str = 'dcc_current',
+    pipinn_policy_output_mode: str = 'projection',
     pipinn_emit_frozen_traincov_strategy: bool = False,
     pipinn_save_training_logs: bool = True,
     pipinn_show_progress: bool = False,
@@ -1944,6 +1951,7 @@ def native_select_factor_suite(
         pipinn_width=int(pipinn_width),
         pipinn_depth=int(pipinn_depth),
         pipinn_covariance_train_mode=str(pipinn_covariance_train_mode),
+        pipinn_policy_output_mode=str(pipinn_policy_output_mode),
         pipinn_emit_frozen_traincov_strategy=bool(pipinn_emit_frozen_traincov_strategy),
         pipinn_save_training_logs=bool(pipinn_save_training_logs),
         pipinn_show_progress=bool(pipinn_show_progress),
