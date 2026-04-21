@@ -13,6 +13,8 @@ ASSET_UNIVERSE_ALIASES = {
     "fama_market": "ff_mkt",
     "ff1": "ff_mkt",
     "ff6": "ff6_szbm",
+    "ff17": "ff17ind",
+    "ff30": "ff30ind",
     "ff38": "ff38ind",
     "ff100": "ff100_szbm",
     "ff25": "ff25_szbm",
@@ -96,7 +98,7 @@ class BondAssetConfig(StrictModel):
 class CustomRiskyAssetConfig(StrictModel):
     name: str
     source: Literal["market_total_return", "equity_universe_column", "csv"] = "market_total_return"
-    base_universe: Literal["ff6_szbm", "ff25_szbm", "ff38ind", "ff49ind", "ff100_szbm"] | None = None
+    base_universe: Literal["ff6_szbm", "ff17ind", "ff25_szbm", "ff30ind", "ff38ind", "ff49ind", "ff100_szbm"] | None = None
     column: str | None = None
     csv: str | None = None
     ret_col: str | None = None
