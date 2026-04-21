@@ -169,6 +169,7 @@ class PIPINNConfig(BaseModel):
     width: int = 96
     depth: int = 4
     covariance_train_mode: Literal['dcc_current', 'cross_resid'] = 'dcc_current'
+    policy_output_mode: Literal['projection', 'pure_qp'] = 'pure_qp'
     x_domain_quantile_low: float = 0.001
     x_domain_quantile_high: float = 0.999
     x_domain_buffer: float = 0.20
