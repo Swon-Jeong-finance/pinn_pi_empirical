@@ -381,7 +381,52 @@ def load_25_size_bm_portfolios_monthly(cfg: Optional[FrenchDownloadConfig] = Non
         df = df.iloc[:, :25]
     return df
 
+def load_17_industry_portfolios_monthly(cfg: Optional[FrenchDownloadConfig] = None) -> pd.DataFrame:
+    """
+    Returns: monthly simple returns (decimal) for the 17 industry portfolios.
 
+    Note: Some archives contain multiple monthly tables (VW and EW) back-to-back.
+    Our parser stops after the first monthly table by detecting date resets.
+    """
+    if cfg is None:
+        cfg = FrenchDownloadConfig()
+
+    candidates = [
+        "17_Industry_Portfolios_CSV.zip",
+        "17_Industry_Portfolios.zip",
+        "17_Industry_Portfolios_TXT.zip",
+        "17_Industry_Portfolios.txt",
+    ]
+    b, _chosen = download_ken_french_zip(candidates, cfg)
+    text = _extract_single_text_file(b)
+    df = _parse_monthly_table(text, expected_n_assets=17)
+    if df.shape[1] > 17:
+        df = df.iloc[:, :17]
+    return df
+
+
+def load_30_industry_portfolios_monthly(cfg: Optional[FrenchDownloadConfig] = None) -> pd.DataFrame:
+    """
+    Returns: monthly simple returns (decimal) for the 30 industry portfolios.
+
+    Note: Some archives contain multiple monthly tables (VW and EW) back-to-back.
+    Our parser stops after the first monthly table by detecting date resets.
+    """
+    if cfg is None:
+        cfg = FrenchDownloadConfig()
+
+    candidates = [
+        "30_Industry_Portfolios_CSV.zip",
+        "30_Industry_Portfolios.zip",
+        "30_Industry_Portfolios_TXT.zip",
+        "30_Industry_Portfolios.txt",
+    ]
+    b, _chosen = download_ken_french_zip(candidates, cfg)
+    text = _extract_single_text_file(b)
+    df = _parse_monthly_table(text, expected_n_assets=30)
+    if df.shape[1] > 30:
+        df = df.iloc[:, :30]
+    return df
 
 
 

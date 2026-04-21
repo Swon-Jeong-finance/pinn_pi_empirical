@@ -11,7 +11,9 @@ import pandas as pd
 
 from .french_data import (
     load_6_size_bm_portfolios_monthly,
+    load_17_industry_portfolios_monthly,
     load_25_size_bm_portfolios_monthly,
+    load_30_industry_portfolios_monthly,
     load_38_industry_portfolios_monthly,
     load_49_industry_portfolios_monthly,
     load_100_size_bm_portfolios_monthly,
@@ -19,6 +21,8 @@ from .french_data import (
 )
 
 ASSET_UNIVERSE_CHOICES: tuple[str, ...] = (
+    'ff17ind',
+    'ff30ind',
     'ff38ind',
     'ff49ind',
     'ff25_szbm',
@@ -27,6 +31,8 @@ ASSET_UNIVERSE_CHOICES: tuple[str, ...] = (
     'ff_mkt',
     'ff1',
     'ff6',
+    'ff17',
+    'ff30',
     'ff38',
     'ff100',
     'fama_market',
@@ -36,6 +42,10 @@ ASSET_UNIVERSE_CHOICES: tuple[str, ...] = (
 
 def describe_asset_universe(asset_universe: str) -> str:
     s = str(asset_universe).lower()
+    if s in {'ff17ind', 'ff17'}:
+        return 'Ken French 17 Industry Portfolios'
+    if s in {'ff30ind', 'ff30'}:
+        return 'Ken French 30 Industry Portfolios'
     if s in {'ff38ind', 'ff38'}:
         return 'Ken French 38 Industry Portfolios'
     if s == 'ff49ind':
@@ -58,6 +68,10 @@ def describe_asset_universe(asset_universe: str) -> str:
 
 def load_equity_universe_monthly(asset_universe: str) -> pd.DataFrame:
     s = str(asset_universe).lower()
+    if s in {'ff17ind', 'ff17'}:
+        return load_17_industry_portfolios_monthly()
+    if s in {'ff30ind', 'ff30'}:
+        return load_30_industry_portfolios_monthly()
     if s in {'ff38ind', 'ff38'}:
         return load_38_industry_portfolios_monthly()
     if s == 'ff49ind':
