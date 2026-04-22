@@ -126,7 +126,7 @@ def _solve_alpha_projected_via_pi_constraints(
     q: torch.Tensor,
     gamma: float,
     cap: float,
-    iters: int = 120,
+    iters: int = 150,
     step_scale: float = 1.2,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Primary alpha-space update with projection through pi-space constraints.
@@ -392,7 +392,6 @@ class PIPINNEnvFromPPGDPO:
         self.state_mean = torch.tensor(states_for_domain.mean(axis=0).to_numpy(dtype=float), device=device, dtype=dtype)
         self.state_std = torch.tensor(states_for_domain.std(axis=0, ddof=0).replace(0.0, 1.0).fillna(1.0).to_numpy(dtype=float), device=device, dtype=dtype)
         self.covariance_train_mode = str(cfg.pipinn.covariance_train_mode)
-        self.policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'projection')).lower()
 
     def _to_raw_state_np(self, x_np: np.ndarray) -> np.ndarray:
         arr = np.asarray(x_np, dtype=float)
@@ -510,12 +509,40 @@ class TrainedPIPINN:
         grad_training = self.grad_u(state_row, tau=tau)
         grad_raw = self.env.grad_training_to_raw(grad_training)
         mu_term = np.asarray(mu, dtype=float).reshape(-1)
+
+        if mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}:
+            if str(self.env.policy_output_mode).lower() == 'pure_qp':
+                sigma_dyn = _matrix_sqrt_psd(cov, floor=1.0e-10)
+                sigma_inv = np.linalg.pinv(sigma_dyn)
+                sigma_inv_t_T = torch.tensor(sigma_inv.T, device=self.env.device, dtype=self.env.dtype)
+                sigma_t_T = torch.tensor(sigma_dyn.T, device=self.env.device, dtype=self.env.dtype)
+            else:
+                sigma_inv = self.env.sigma_inv
+                sigma_inv_t_T = self.env.sigma_inv_t_T
+                sigma_t_T = self.env.sigma_train_t.T
+            phi = sigma_inv @ mu_term
+            gamma_cross = sigma_inv @ cross
+            q = phi + gamma_cross @ grad_raw
+            q_t = torch.tensor(q.reshape(1, -1), device=self.env.device, dtype=self.env.dtype)
+            _, pi_t = _solve_alpha_projected_via_pi_constraints(
+                sigma_inv_t_T=sigma_inv_t_T,
+                sigma_t_T=sigma_t_T,
+                q=q_t,
+                gamma=self.env.gamma,
+                cap=self.env.risky_cap,
+            )
+            w = np.asarray(pi_t.squeeze(0).detach().cpu().numpy(), dtype=float)
+            return w, {
+                'mu_term': mu_term,
+                'phi_term': np.asarray(phi, dtype=float),
+                'q_vec': np.asarray(q, dtype=float),
+                'grad_training': np.asarray(grad_training, dtype=float),
+                'grad_raw': np.asarray(grad_raw, dtype=float),
+                'control_update_space': 'alpha',
+                'closed_form_costates': False,
+            }
         
         if str(self.env.policy_output_mode).lower() == 'pure_qp':
-            grad = self.grad_u(state_row, tau=tau)
-            # hedge_signal = np.asarray(cross @ grad.reshape(-1), dtype=float).reshape(-1)
-            # mu_term = np.asarray(mu, dtype=float).reshape(-1)
-            # hedge_term = hedge_signal
             hedge_signal = np.asarray(cross @ grad_raw.reshape(-1), dtype=float).reshape(-1)
             a_vec = mu_term + hedge_signal
             cov_t = torch.tensor(np.asarray(cov, dtype=float), device=self.env.device, dtype=self.env.dtype)
@@ -537,29 +564,7 @@ class TrainedPIPINN:
                 'a_vec': a_vec,
                 'neg_jxx': float(self.env.gamma),
                 'neg_jxx_is_gamma': True,
-                'closed_form_costates': False,
-            }
-
-        if mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}:
-            sigma_inv = self.env.sigma_inv
-            phi = sigma_inv @ mu_term
-            gamma_cross = sigma_inv @ cross
-            q = phi + gamma_cross @ grad_raw
-            q_t = torch.tensor(q.reshape(1, -1), device=self.env.device, dtype=self.env.dtype)
-            _, pi_t = _solve_alpha_projected_via_pi_constraints(
-                sigma_inv_t_T=self.env.sigma_inv_t_T,
-                sigma_t_T=self.env.sigma_train_t.T,
-                q=q_t,
-                gamma=self.env.gamma,
-                cap=self.env.risky_cap,
-            )
-            w = np.asarray(pi_t.squeeze(0).detach().cpu().numpy(), dtype=float)
-            return w, {
-                'mu_term': mu_term,
-                'phi_term': np.asarray(phi, dtype=float),
-                'q_vec': np.asarray(q, dtype=float),
-                'grad_training': np.asarray(grad_training, dtype=float),
-                'grad_raw': np.asarray(grad_raw, dtype=float),
+                'control_update_space': 'pi',
                 'closed_form_costates': False,
             }
             
@@ -713,30 +718,17 @@ def _precompute_policy_coeffs(
         phi = torch.matmul(mu, env.sigma_inv_t.T)
         q = phi + torch.matmul(u_x, env.Gamma_train_t.T)
         pi: torch.Tensor
-        if str(getattr(env, 'policy_output_mode', 'pure_qp')).lower() == 'projection':
-            try:
-                _alpha, pi = _solve_alpha_projected_via_pi_constraints(
-                    sigma_inv_t_T=env.sigma_inv_t_T,
-                    sigma_t_T=env.sigma_train_t.T,
-                    q=q,
-                    gamma=env.gamma,
-                    cap=env.risky_cap,
-                    iters=140,
-                    step_scale=1.2,
-                )
-            except Exception:
-                grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
-                v_fb = mu + torch.matmul(grad_raw, env.C_train_raw_t.T)
-                pi = _solve_qp_long_only_budget_full(
-                    env.Sigma_train_t,
-                    v_fb,
-                    gamma=env.gamma,
-                    cap=env.risky_cap,
-                    iters=300,
-                    tol=1.0e-10,
-                    step_scale=1.1,
-                )
-        else:
+        try:
+            _alpha, pi = _solve_alpha_projected_via_pi_constraints(
+                sigma_inv_t_T=env.sigma_inv_t_T,
+                sigma_t_T=env.sigma_train_t.T,
+                q=q,
+                gamma=env.gamma,
+                cap=env.risky_cap,
+                iters=150,
+                step_scale=1.2,
+            )
+        except Exception:
             grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
             v_fb = mu + torch.matmul(grad_raw, env.C_train_raw_t.T)
             pi = _solve_qp_long_only_budget_full(
