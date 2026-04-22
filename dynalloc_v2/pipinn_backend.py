@@ -321,6 +321,7 @@ class PIPINNEnvFromPPGDPO:
         self.device = device
         self.dtype = dtype
         self.gamma = float(cfg.policy.risk_aversion)
+        self.r = float(getattr(cfg.policy, 'risk_premium_r', getattr(cfg.policy, 'risk_free_rate', 0.0)))
         self.risky_cap = float(min(float(cfg.policy.risky_cap), 1.0 - float(getattr(cfg.policy, 'cash_floor', 0.0) or 0.0)))
         self.tau_max = float(max(tau_max, 1.0e-8))
         self.state_columns = list(states_t.columns)
@@ -340,9 +341,6 @@ class PIPINNEnvFromPPGDPO:
         cross_df = cross_est.cross.reindex(index=self.asset_columns, columns=self.state_columns)
         self.C_train_raw = cross_df.to_numpy(dtype=float)
         self.Sigma_train = _symmetrize_psd(np.asarray(sigma_train, dtype=float), floor=1.0e-10)
-        self.Sigma_train_t = torch.tensor(self.Sigma_train, device=device, dtype=dtype)
-        self.Q_t = torch.tensor(self.Q, device=device, dtype=dtype)
-        self.C_train_t = torch.tensor(self.C_train, device=device, dtype=dtype)
 
         if self.state_whiten_enabled:
             self.Lz = _matrix_sqrt_psd(self.Q_raw, floor=1.0e-10)
@@ -364,11 +362,21 @@ class PIPINNEnvFromPPGDPO:
             self.C_train = self.C_train_raw
             states_for_domain = states_t
 
+        self.Sigma_train_t = torch.tensor(self.Sigma_train, device=device, dtype=dtype)
+        self.Q_t = torch.tensor(self.Q, device=device, dtype=dtype)
+        self.C_train_t = torch.tensor(self.C_train, device=device, dtype=dtype)
+        self.C_train_raw_t = torch.tensor(self.C_train_raw, device=device, dtype=dtype)
+        self.sigma_train = _matrix_sqrt_psd(self.Sigma_train, floor=1.0e-10)
+        self.sigma_inv = np.linalg.pinv(self.sigma_train)
+        self.sigma_train_t = torch.tensor(self.sigma_train, device=device, dtype=dtype)
+        self.sigma_inv_t = torch.tensor(self.sigma_inv, device=device, dtype=dtype)
+        self.sigma_inv_t_T = self.sigma_inv_t.T
+        self.Gamma_train = self.sigma_inv @ self.C_train
+        self.Gamma_train_t = torch.tensor(self.Gamma_train, device=device, dtype=dtype)
+        
         self.Lz_t = torch.tensor(self.Lz, device=device, dtype=dtype)
         self.Lz_inv_t = torch.tensor(self.Lz_inv, device=device, dtype=dtype)
         self.Lz_inv_t_T = self.Lz_inv_t.T
-
-        
         
         x_min, x_max = _safe_box_quantiles(
             states_for_domain,
@@ -487,9 +495,7 @@ class TrainedPIPINN:
         cross_mat: np.ndarray | None = None,
         tau: float | None = None,
     ) -> tuple[np.ndarray, dict[str, np.ndarray | float | bool]]:
-        
         cov = self.env.Sigma_train if covariance is None else _symmetrize_psd(np.asarray(covariance, dtype=float), floor=1.0e-10)
-        # cross = self.env.C_train if cross_mat is None else np.asarray(cross_mat, dtype=float)
         cross_default = getattr(self.env, 'C_train_raw', self.env.C_train)
         cross = cross_default if cross_mat is None else np.asarray(cross_mat, dtype=float)
         if cross.ndim == 1:
@@ -500,14 +506,18 @@ class TrainedPIPINN:
         else:
             x = np.asarray(state_row, dtype=float).reshape(1, -1)
         mu = self.env.mean_map.predict_batch(x).reshape(-1)
+        mode = str(getattr(self.env, 'ansatz_mode', 'ansatz_log_transform')).lower()
+        grad_training = self.grad_u(state_row, tau=tau)
+        grad_raw = self.env.grad_training_to_raw(grad_training)
+        mu_term = np.asarray(mu, dtype=float).reshape(-1)
         
         if str(self.env.policy_output_mode).lower() == 'pure_qp':
             grad = self.grad_u(state_row, tau=tau)
-            hedge_signal = np.asarray(cross @ grad.reshape(-1), dtype=float).reshape(-1)
-            mu_term = np.asarray(mu, dtype=float).reshape(-1)
-            
-            hedge_term = hedge_signal
-            a_vec = mu_term + hedge_term
+            # hedge_signal = np.asarray(cross @ grad.reshape(-1), dtype=float).reshape(-1)
+            # mu_term = np.asarray(mu, dtype=float).reshape(-1)
+            # hedge_term = hedge_signal
+            hedge_signal = np.asarray(cross @ grad_raw.reshape(-1), dtype=float).reshape(-1)
+            a_vec = mu_term + hedge_signal
             cov_t = torch.tensor(np.asarray(cov, dtype=float), device=self.env.device, dtype=self.env.dtype)
             v_t = torch.tensor(a_vec.reshape(1, -1), device=self.env.device, dtype=self.env.dtype)
             w_t = _solve_qp_long_only_budget_full(
@@ -523,12 +533,36 @@ class TrainedPIPINN:
             return w, {
                 'hedge_signal': hedge_signal,
                 'mu_term': mu_term,
-                'hedge_term': hedge_term,
+                'hedge_term': hedge_signal,
                 'a_vec': a_vec,
                 'neg_jxx': float(self.env.gamma),
                 'neg_jxx_is_gamma': True,
                 'closed_form_costates': False,
             }
+
+        if mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}:
+            sigma_inv = self.env.sigma_inv
+            phi = sigma_inv @ mu_term
+            gamma_cross = sigma_inv @ cross
+            q = phi + gamma_cross @ grad_raw
+            q_t = torch.tensor(q.reshape(1, -1), device=self.env.device, dtype=self.env.dtype)
+            _, pi_t = _solve_alpha_projected_via_pi_constraints(
+                sigma_inv_t_T=self.env.sigma_inv_t_T,
+                sigma_t_T=self.env.sigma_train_t.T,
+                q=q_t,
+                gamma=self.env.gamma,
+                cap=self.env.risky_cap,
+            )
+            w = np.asarray(pi_t.squeeze(0).detach().cpu().numpy(), dtype=float)
+            return w, {
+                'mu_term': mu_term,
+                'phi_term': np.asarray(phi, dtype=float),
+                'q_vec': np.asarray(q, dtype=float),
+                'grad_training': np.asarray(grad_training, dtype=float),
+                'grad_raw': np.asarray(grad_raw, dtype=float),
+                'closed_form_costates': False,
+            }
+            
         costates = self.estimate_costates(state_row, wealth=1.0, tau0=tau)
         w, _ = solve_ppgdpo_projection(
             mu=mu,
@@ -540,7 +574,12 @@ class TrainedPIPINN:
             wealth=1.0,
             cross_scale=1.0,
         )
-        return np.asarray(w, dtype=float), dict(debug)
+        return np.asarray(w, dtype=float), {
+            'mu_term': mu_term,
+            'grad_training': np.asarray(grad_training, dtype=float),
+            'grad_raw': np.asarray(grad_raw, dtype=float),
+            'closed_form_costates': bool(costates.closed_form),
+        }
 
 
 def _sample_collocation(
@@ -722,7 +761,8 @@ def _precompute_policy_coeffs(
             step_scale=1.1,
         )
     pi_sigma_pi = torch.sum(pi * torch.matmul(pi, env.Sigma_train_t.T), dim=1, keepdim=True)
-    A = (1.0 - env.gamma) * (torch.sum(pi * mu, dim=1, keepdim=True) - 0.5 * env.gamma * pi_sigma_pi)
+    r = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
+    A = (1.0 - env.gamma) * (r + torch.sum(pi * mu, dim=1, keepdim=True) - 0.5 * env.gamma * pi_sigma_pi)
     Bcoef = (1.0 - env.gamma) * torch.matmul(pi, env.C_train_t)
     return _BatchPolicyCoefficients(tau=tau.detach(), x=x.detach(), A=A.detach(), Bcoef=Bcoef.detach())
 
