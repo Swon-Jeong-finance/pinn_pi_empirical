@@ -169,6 +169,7 @@ class PIPINNConfig(BaseModel):
     width: int = 96
     depth: int = 4
     covariance_train_mode: Literal['dcc_current', 'cross_resid'] = 'dcc_current'
+    ansatz_mode: Literal['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'] = 'ansatz_normalization_log_transform'
     policy_output_mode: Literal['projection', 'pure_qp'] = 'pure_qp'
     x_domain_quantile_low: float = 0.001
     x_domain_quantile_high: float = 0.999
@@ -179,6 +180,9 @@ class PIPINNConfig(BaseModel):
     show_epoch_progress: bool = False
     auto_output_subdir: bool = False
     output_tag_fields: list[str] = Field(default_factory=list)
+    # walk-forward warm-start: reuse previous window's weights as initialization
+    warm_start: bool = False
+    warm_start_policy: bool = True  # also warm-start policy_u_net for outer iter 1
 
 
 

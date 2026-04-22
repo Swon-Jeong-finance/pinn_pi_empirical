@@ -175,6 +175,7 @@ def cmd_select_native_suite(args):
         pipinn_width=args.pipinn_width,
         pipinn_depth=args.pipinn_depth,
         pipinn_covariance_train_mode=args.pipinn_covariance_train_mode,
+        pipinn_ansatz_mode=args.pipinn_ansatz_mode,
         pipinn_policy_output_mode=args.pipinn_policy_output_mode,
         pipinn_emit_frozen_traincov_strategy=bool(args.pipinn_emit_frozen_traincov_strategy),
         pipinn_save_training_logs=bool(not args.disable_pipinn_save_training_logs),
@@ -300,6 +301,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-width', type=int, default=128)
     p_native.add_argument('--pipinn-depth', type=int, default=3)
     p_native.add_argument('--pipinn-covariance-train-mode', choices=['dcc_current', 'cross_resid'], default='dcc_current')
+    p_native.add_argument(
+        '--pipinn-ansatz-mode',
+        choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'],
+        default='ansatz_log_transform',
+    )
     p_native.add_argument('--pipinn-policy-output-mode', choices=['projection', 'pure_qp'], default='pure_qp')
     p_native.add_argument('--pipinn-emit-frozen-traincov-strategy', action='store_true')
     p_native.add_argument('--disable-pipinn-save-training-logs', action='store_true')

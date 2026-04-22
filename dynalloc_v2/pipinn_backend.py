@@ -28,6 +28,11 @@ def _symmetrize_psd(mat: np.ndarray, *, floor: float = 1.0e-10) -> np.ndarray:
     eigval = np.clip(eigval, floor, None)
     return eigvec @ np.diag(eigval) @ eigvec.T
 
+def _matrix_sqrt_psd(mat: np.ndarray, *, floor: float = 1.0e-10) -> np.ndarray:
+    arr = _symmetrize_psd(mat, floor=floor)
+    eigval, eigvec = np.linalg.eigh(arr)
+    eigval = np.clip(eigval, floor, None)
+    return eigvec @ np.diag(np.sqrt(eigval)) @ eigvec.T
 
 def _safe_box_quantiles(states_t: pd.DataFrame, *, q_low: float, q_high: float, buffer: float) -> tuple[np.ndarray, np.ndarray]:
     arr = states_t.to_numpy(dtype=float)
@@ -113,6 +118,51 @@ def _solve_qp_long_only_budget_full(
             break
     return pi if v.ndim == 2 else pi.squeeze(0)
 
+@torch.no_grad()
+def _solve_alpha_projected_via_pi_constraints(
+    *,
+    sigma_inv_t_T: torch.Tensor,
+    sigma_t_T: torch.Tensor,
+    q: torch.Tensor,
+    gamma: float,
+    cap: float,
+    iters: int = 120,
+    step_scale: float = 1.2,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Primary alpha-space update with projection through pi-space constraints.
+
+    Objective in alpha-space:
+        max_a  a·q - (gamma/2)||a||^2
+    with implicit feasible set induced by:
+        pi = sigma^{-T} a,  pi >= 0, 1^T pi <= cap.
+    """
+    gamma = float(gamma)
+    cap = float(cap)
+    if cap <= 0.0:
+        z = torch.zeros_like(q)
+        return z, z
+    if q.ndim == 1:
+        q2 = q.view(1, -1)
+    else:
+        q2 = q
+    alpha = q2 / max(gamma, 1.0e-12)
+    lam_max = max(gamma, 1.0e-12)
+    step = 1.0 / (step_scale * lam_max)
+    for _ in range(max(int(iters), 1)):
+        grad = q2 - gamma * alpha
+        alpha_new = alpha + step * grad
+        pi_tmp = torch.matmul(alpha_new, sigma_inv_t_T)
+        pi_proj = _proj_nonneg_l1_ball(pi_tmp, cap)
+        alpha_proj = torch.matmul(pi_proj, sigma_t_T)
+        if torch.max(torch.abs(alpha_proj - alpha)).item() < 1.0e-9:
+            alpha = alpha_proj
+            break
+        alpha = alpha_proj
+    pi = torch.matmul(alpha, sigma_inv_t_T)
+    pi = _proj_nonneg_l1_ball(pi, cap)
+    alpha = torch.matmul(pi, sigma_t_T)
+    return (alpha if q.ndim == 2 else alpha.squeeze(0),
+            pi if q.ndim == 2 else pi.squeeze(0))
 
 class _MLP(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, hidden_layers: int):
@@ -283,15 +333,45 @@ class PIPINNEnvFromPPGDPO:
         self.transition_matrix = coef[1:, :].T.astype(float)
         self.drift_intercept = self.transition_intercept.copy()
         self.drift_matrix = self.transition_matrix - np.eye(self.n_states, dtype=float)
-        self.Q = _symmetrize_psd(np.asarray(cross_est.state_innov_cov, dtype=float), floor=1.0e-10)
+        self.ansatz_mode = str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')).lower()
+        self.policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')).lower()
+        self.state_whiten_enabled = self.ansatz_mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}
+        self.Q_raw = _symmetrize_psd(np.asarray(cross_est.state_innov_cov, dtype=float), floor=1.0e-10)
         cross_df = cross_est.cross.reindex(index=self.asset_columns, columns=self.state_columns)
-        self.C_train = cross_df.to_numpy(dtype=float)
+        self.C_train_raw = cross_df.to_numpy(dtype=float)
         self.Sigma_train = _symmetrize_psd(np.asarray(sigma_train, dtype=float), floor=1.0e-10)
         self.Sigma_train_t = torch.tensor(self.Sigma_train, device=device, dtype=dtype)
         self.Q_t = torch.tensor(self.Q, device=device, dtype=dtype)
         self.C_train_t = torch.tensor(self.C_train, device=device, dtype=dtype)
+
+        if self.state_whiten_enabled:
+            self.Lz = _matrix_sqrt_psd(self.Q_raw, floor=1.0e-10)
+            self.Lz_inv = np.linalg.pinv(self.Lz)
+            eye = np.eye(self.n_states, dtype=float)
+            self.Q = eye
+            try:
+                self.z_center = -np.linalg.solve(self.drift_matrix, self.drift_intercept)
+            except np.linalg.LinAlgError:
+                self.z_center = states_t.mean(axis=0).to_numpy(dtype=float)
+            self.C_train = self.C_train_raw @ self.Lz_inv.T
+            states_train_coord = (states_t.to_numpy(dtype=float) - self.z_center[None, :]) @ self.Lz_inv.T
+            states_for_domain = pd.DataFrame(states_train_coord, index=states_t.index, columns=self.state_columns)
+        else:
+            self.Lz = np.eye(self.n_states, dtype=float)
+            self.Lz_inv = np.eye(self.n_states, dtype=float)
+            self.z_center = np.zeros(self.n_states, dtype=float)
+            self.Q = self.Q_raw
+            self.C_train = self.C_train_raw
+            states_for_domain = states_t
+
+        self.Lz_t = torch.tensor(self.Lz, device=device, dtype=dtype)
+        self.Lz_inv_t = torch.tensor(self.Lz_inv, device=device, dtype=dtype)
+        self.Lz_inv_t_T = self.Lz_inv_t.T
+
+        
+        
         x_min, x_max = _safe_box_quantiles(
-            states_t,
+            states_for_domain,
             q_low=float(cfg.pipinn.x_domain_quantile_low),
             q_high=float(cfg.pipinn.x_domain_quantile_high),
             buffer=float(cfg.pipinn.x_domain_buffer),
@@ -300,20 +380,39 @@ class PIPINNEnvFromPPGDPO:
         self.x_max = x_max
         self.x_min_t = torch.tensor(x_min.reshape(1, -1), device=device, dtype=dtype)
         self.x_max_t = torch.tensor(x_max.reshape(1, -1), device=device, dtype=dtype)
-        self.x_empirical = states_t.to_numpy(dtype=float)
-        self.state_mean = torch.tensor(states_t.mean(axis=0).to_numpy(dtype=float), device=device, dtype=dtype)
-        self.state_std = torch.tensor(states_t.std(axis=0, ddof=0).replace(0.0, 1.0).fillna(1.0).to_numpy(dtype=float), device=device, dtype=dtype)
+        self.x_empirical = states_for_domain.to_numpy(dtype=float)
+        self.state_mean = torch.tensor(states_for_domain.mean(axis=0).to_numpy(dtype=float), device=device, dtype=dtype)
+        self.state_std = torch.tensor(states_for_domain.std(axis=0, ddof=0).replace(0.0, 1.0).fillna(1.0).to_numpy(dtype=float), device=device, dtype=dtype)
         self.covariance_train_mode = str(cfg.pipinn.covariance_train_mode)
+        self.policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'projection')).lower()
+
+    def _to_raw_state_np(self, x_np: np.ndarray) -> np.ndarray:
+        arr = np.asarray(x_np, dtype=float)
+        if not self.state_whiten_enabled:
+            return arr
+        return self.z_center[None, :] + arr @ self.Lz.T
 
     def mu_batch(self, x: torch.Tensor) -> torch.Tensor:
-        mu = self.mean_map.predict_batch(x.detach().cpu().numpy())
+        x_np = x.detach().cpu().numpy()
+        z_np = self._to_raw_state_np(x_np)
+        mu = self.mean_map.predict_batch(z_np)
         return torch.tensor(mu, device=self.device, dtype=self.dtype)
 
     def drift_batch(self, x: torch.Tensor) -> torch.Tensor:
         x_np = x.detach().cpu().numpy()
-        drift = self.drift_intercept[None, :] + x_np @ self.drift_matrix.T
+        if self.state_whiten_enabled:
+            z_np = self._to_raw_state_np(x_np)
+            drift_raw = self.drift_intercept[None, :] + z_np @ self.drift_matrix.T
+            drift = drift_raw @ self.Lz_inv.T
+        else:
+            drift = self.drift_intercept[None, :] + x_np @ self.drift_matrix.T
         return torch.tensor(drift, device=self.device, dtype=self.dtype)
 
+    def grad_training_to_raw(self, grad: np.ndarray) -> np.ndarray:
+        arr = np.asarray(grad, dtype=float).reshape(-1)
+        if not self.state_whiten_enabled:
+            return arr
+        return arr @ self.Lz_inv
 
 class TrainedPIPINN:
     def __init__(
@@ -340,6 +439,8 @@ class TrainedPIPINN:
             arr = state_row[self.state_columns].to_numpy(dtype=float).reshape(1, -1)
         else:
             arr = np.asarray(state_row, dtype=float).reshape(1, -1)
+        if self.env.state_whiten_enabled:
+            arr = (arr - self.env.z_center[None, :]) @ self.env.Lz_inv.T
         return torch.tensor(arr, device=self.env.device, dtype=self.env.dtype)
 
     def grad_u(self, state_row: pd.Series | np.ndarray, *, tau: float | None = None) -> np.ndarray:
@@ -353,7 +454,8 @@ class TrainedPIPINN:
 
     def estimate_costates(self, state_row: pd.Series | np.ndarray, *, wealth: float = 1.0, tau0: float | None = None) -> CostateEstimate:
         wealth = float(max(wealth, 1.0e-12))
-        grad = self.grad_u(state_row, tau=tau0)
+        grad_training = self.grad_u(state_row, tau=tau0)
+        grad = self.env.grad_training_to_raw(grad_training)
         return CostateEstimate(
             JX=1.0 / wealth,
             JXX=-float(self.env.gamma) / (wealth * wealth),
@@ -369,16 +471,65 @@ class TrainedPIPINN:
         cross_mat: np.ndarray | None = None,
         tau: float | None = None,
     ) -> np.ndarray:
+        w, _ = self.policy_weights_with_debug(
+            state_row,
+            covariance=covariance,
+            cross_mat=cross_mat,
+            tau=tau,
+        )
+        return np.asarray(w, dtype=float)
+
+    def policy_weights_with_debug(
+        self,
+        state_row: pd.Series | np.ndarray,
+        *,
+        covariance: np.ndarray | None = None,
+        cross_mat: np.ndarray | None = None,
+        tau: float | None = None,
+    ) -> tuple[np.ndarray, dict[str, np.ndarray | float | bool]]:
+        
         cov = self.env.Sigma_train if covariance is None else _symmetrize_psd(np.asarray(covariance, dtype=float), floor=1.0e-10)
-        cross = self.env.C_train if cross_mat is None else np.asarray(cross_mat, dtype=float)
+        # cross = self.env.C_train if cross_mat is None else np.asarray(cross_mat, dtype=float)
+        cross_default = getattr(self.env, 'C_train_raw', self.env.C_train)
+        cross = cross_default if cross_mat is None else np.asarray(cross_mat, dtype=float)
         if cross.ndim == 1:
             cross = cross.reshape(-1, 1)
-        costates = self.estimate_costates(state_row, wealth=1.0, tau0=tau)
+        # costates = self.estimate_costates(state_row, wealth=1.0, tau0=tau)
         if isinstance(state_row, pd.Series):
             x = state_row[self.state_columns].to_numpy(dtype=float).reshape(1, -1)
         else:
             x = np.asarray(state_row, dtype=float).reshape(1, -1)
         mu = self.env.mean_map.predict_batch(x).reshape(-1)
+        
+        if str(self.env.policy_output_mode).lower() == 'pure_qp':
+            grad = self.grad_u(state_row, tau=tau)
+            hedge_signal = np.asarray(cross @ grad.reshape(-1), dtype=float).reshape(-1)
+            mu_term = np.asarray(mu, dtype=float).reshape(-1)
+            
+            hedge_term = hedge_signal
+            a_vec = mu_term + hedge_term
+            cov_t = torch.tensor(np.asarray(cov, dtype=float), device=self.env.device, dtype=self.env.dtype)
+            v_t = torch.tensor(a_vec.reshape(1, -1), device=self.env.device, dtype=self.env.dtype)
+            w_t = _solve_qp_long_only_budget_full(
+                cov_t,
+                v_t,
+                gamma=float(self.env.gamma),
+                cap=float(self.env.risky_cap),
+                iters=300,
+                tol=1.0e-10,
+                step_scale=1.1,
+            )
+            w = np.asarray(w_t.squeeze(0).detach().cpu().numpy(), dtype=float)
+            return w, {
+                'hedge_signal': hedge_signal,
+                'mu_term': mu_term,
+                'hedge_term': hedge_term,
+                'a_vec': a_vec,
+                'neg_jxx': float(self.env.gamma),
+                'neg_jxx_is_gamma': True,
+                'closed_form_costates': False,
+            }
+        costates = self.estimate_costates(state_row, wealth=1.0, tau0=tau)
         w, _ = solve_ppgdpo_projection(
             mu=mu,
             cov=cov,
@@ -389,7 +540,7 @@ class TrainedPIPINN:
             wealth=1.0,
             cross_scale=1.0,
         )
-        return np.asarray(w, dtype=float)
+        return np.asarray(w, dtype=float), dict(debug)
 
 
 def _sample_collocation(
@@ -466,6 +617,12 @@ def _g_and_derivs(model_u: ValueNet, tau: torch.Tensor, x: torch.Tensor, *, crea
     g_x = torch.autograd.grad(g, x, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
     return u, g, g_tau, g_x
 
+def _u_derivs(model_u: ValueNet, tau: torch.Tensor, x: torch.Tensor, *, create_graph: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    u = model_u(tau, x)
+    ones = torch.ones_like(u)
+    u_tau = torch.autograd.grad(u, tau, grad_outputs=ones, create_graph=create_graph, retain_graph=True)[0]
+    u_x = torch.autograd.grad(u, x, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
+    return u, u_tau, u_x
 
 def _drift_term(env: PIPINNEnvFromPPGDPO, x: torch.Tensor, g_x: torch.Tensor) -> torch.Tensor:
     drift = env.drift_batch(x)
@@ -511,17 +668,59 @@ def _precompute_policy_coeffs(
             u = policy_u_net(tau_g, x_g)
             u_x = torch.autograd.grad(u, x_g, grad_outputs=torch.ones_like(u), create_graph=False)[0]
         u_x = u_x.detach()
-    hedging = torch.matmul(u_x, env.C_train_t.T)
-    v = mu + hedging
-    pi = _solve_qp_long_only_budget_full(
-        env.Sigma_train_t,
-        v,
-        gamma=env.gamma,
-        cap=env.risky_cap,
-        iters=300,
-        tol=1.0e-10,
-        step_scale=1.1,
-    )
+    mode = str(getattr(env, 'ansatz_mode', 'ansatz_log_transform')).lower()
+    use_normalized_update = mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}
+    if use_normalized_update:
+        phi = torch.matmul(mu, env.sigma_inv_t.T)
+        q = phi + torch.matmul(u_x, env.Gamma_train_t.T)
+        pi: torch.Tensor
+        if str(getattr(env, 'policy_output_mode', 'pure_qp')).lower() == 'projection':
+            try:
+                _alpha, pi = _solve_alpha_projected_via_pi_constraints(
+                    sigma_inv_t_T=env.sigma_inv_t_T,
+                    sigma_t_T=env.sigma_train_t.T,
+                    q=q,
+                    gamma=env.gamma,
+                    cap=env.risky_cap,
+                    iters=140,
+                    step_scale=1.2,
+                )
+            except Exception:
+                grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
+                v_fb = mu + torch.matmul(grad_raw, env.C_train_raw_t.T)
+                pi = _solve_qp_long_only_budget_full(
+                    env.Sigma_train_t,
+                    v_fb,
+                    gamma=env.gamma,
+                    cap=env.risky_cap,
+                    iters=300,
+                    tol=1.0e-10,
+                    step_scale=1.1,
+                )
+        else:
+            grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
+            v_fb = mu + torch.matmul(grad_raw, env.C_train_raw_t.T)
+            pi = _solve_qp_long_only_budget_full(
+                env.Sigma_train_t,
+                v_fb,
+                gamma=env.gamma,
+                cap=env.risky_cap,
+                iters=300,
+                tol=1.0e-10,
+                step_scale=1.1,
+            )
+    else:
+        hedging = torch.matmul(u_x, env.C_train_t.T)
+        v = mu + hedging
+        pi = _solve_qp_long_only_budget_full(
+            env.Sigma_train_t,
+            v,
+            gamma=env.gamma,
+            cap=env.risky_cap,
+            iters=300,
+            tol=1.0e-10,
+            step_scale=1.1,
+        )
     pi_sigma_pi = torch.sum(pi * torch.matmul(pi, env.Sigma_train_t.T), dim=1, keepdim=True)
     A = (1.0 - env.gamma) * (torch.sum(pi * mu, dim=1, keepdim=True) - 0.5 * env.gamma * pi_sigma_pi)
     Bcoef = (1.0 - env.gamma) * torch.matmul(pi, env.C_train_t)
@@ -602,12 +801,22 @@ def _policy_evaluation(
         optimizer.zero_grad()
         tau = train_coeff.tau.detach().clone().requires_grad_(True)
         x = train_coeff.x.detach().clone().requires_grad_(True)
-        _, g, g_tau, g_x = _g_and_derivs(model_u, tau, x, create_graph=True)
-        drift = _drift_term(env, x, g_x)
-        diff = _diffusion_term(env, x, g_x, create_graph=True)
-        bterm = torch.sum(train_coeff.Bcoef * g_x, dim=1, keepdim=True)
-        rhs = drift + diff + train_coeff.A * g + bterm
-        res = g_tau - rhs
+        mode = str(getattr(env, 'ansatz_mode', 'ansatz_log_transform')).lower()
+        if mode == 'ansatz_normalization_log_transform':
+            u_pred, u_tau, u_x = _u_derivs(model_u, tau, x, create_graph=True)
+            drift_u = _drift_term(env, x, u_x)
+            diff_u = _diffusion_term(env, x, u_x, create_graph=True)
+            quad = 0.5 * torch.sum(u_x * torch.matmul(u_x, env.Q_t.T), dim=1, keepdim=True)
+            bterm_u = torch.sum(train_coeff.Bcoef * u_x, dim=1, keepdim=True)
+            rhs_u = drift_u + diff_u + quad + train_coeff.A + bterm_u
+            res = u_tau - rhs_u
+        else:
+            _, g, g_tau, g_x = _g_and_derivs(model_u, tau, x, create_graph=True)
+            drift = _drift_term(env, x, g_x)
+            diff = _diffusion_term(env, x, g_x, create_graph=True)
+            bterm = torch.sum(train_coeff.Bcoef * g_x, dim=1, keepdim=True)
+            rhs = drift + diff + train_coeff.A * g + bterm
+            res = g_tau - rhs
         loss_pde = torch.mean(res * res)
         xb_g = train_xb.detach().clone().requires_grad_(True)
         u_bc = model_u(train_taub, xb_g)
@@ -623,12 +832,21 @@ def _policy_evaluation(
         with torch.enable_grad():
             tau_v = val_coeff.tau.detach().clone().requires_grad_(True)
             x_v = val_coeff.x.detach().clone().requires_grad_(True)
-            _, g_v, g_tau_v, g_x_v = _g_and_derivs(model_u, tau_v, x_v, create_graph=False)
-            drift_v = _drift_term(env, x_v, g_x_v)
-            diff_v = _diffusion_term(env, x_v, g_x_v, create_graph=False)
-            bterm_v = torch.sum(val_coeff.Bcoef * g_x_v, dim=1, keepdim=True)
-            rhs_v = drift_v + diff_v + val_coeff.A * g_v + bterm_v
-            res_v = g_tau_v - rhs_v
+            if mode == 'ansatz_normalization_log_transform':
+                u_v, u_tau_v, u_x_v = _u_derivs(model_u, tau_v, x_v, create_graph=False)
+                drift_v = _drift_term(env, x_v, u_x_v)
+                diff_v = _diffusion_term(env, x_v, u_x_v, create_graph=False)
+                quad_v = 0.5 * torch.sum(u_x_v * torch.matmul(u_x_v, env.Q_t.T), dim=1, keepdim=True)
+                bterm_v = torch.sum(val_coeff.Bcoef * u_x_v, dim=1, keepdim=True)
+                rhs_v = drift_v + diff_v + quad_v + val_coeff.A + bterm_v
+                res_v = u_tau_v - rhs_v
+            else:
+                _, g_v, g_tau_v, g_x_v = _g_and_derivs(model_u, tau_v, x_v, create_graph=False)
+                drift_v = _drift_term(env, x_v, g_x_v)
+                diff_v = _diffusion_term(env, x_v, g_x_v, create_graph=False)
+                bterm_v = torch.sum(val_coeff.Bcoef * g_x_v, dim=1, keepdim=True)
+                rhs_v = drift_v + diff_v + val_coeff.A * g_v + bterm_v
+                res_v = g_tau_v - rhs_v
             val_pde = torch.mean(res_v * res_v)
             xb_v = val_xb.detach().clone().requires_grad_(True)
             u_bc_v = model_u(val_taub, xb_v)
@@ -703,6 +921,7 @@ def train_pipinn_policy(
     factor_repr: Any,
     progress_label: str | None = None,
     tau_max: float | None = None,
+    warm_start_from: 'TrainedPIPINN | None' = None,
 ) -> TrainedPIPINN:
     del transaction_cost
     if states_t.shape[1] <= 0:
@@ -751,6 +970,23 @@ def train_pipinn_policy(
         width=int(cfg.pipinn.width),
         depth=int(cfg.pipinn.depth),
     ).to(device=device, dtype=dtype)
+
+    # --- warm-start: copy previous window's MLP parameters if available ---
+    warm_start_enabled = bool(getattr(cfg.pipinn, 'warm_start', False)) and warm_start_from is not None
+    if warm_start_enabled:
+        prev_params = dict(warm_start_from.model_u.named_parameters())
+        loaded, skipped = 0, 0
+        with torch.no_grad():
+            for name, param in model_u.named_parameters():
+                if name in prev_params and prev_params[name].shape == param.shape:
+                    param.data.copy_(prev_params[name].data.to(device=device, dtype=dtype))
+                    loaded += 1
+                else:
+                    skipped += 1
+        if skipped > 0:
+            # architecture mismatch (e.g., state dim changed) → fall back gracefully
+            warm_start_enabled = False
+            
     optimizer = torch.optim.Adam(model_u.parameters(), lr=float(cfg.pipinn.lr))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -776,7 +1012,11 @@ def train_pipinn_policy(
     best_overall = float('inf')
     best_state = None
     all_hist: list[dict[str, float]] = []
-    policy_u_net: ValueNet | None = None
+    # warm-start policy: if enabled, outer iter 1 uses prev window's policy instead of myopic
+    if warm_start_enabled and bool(getattr(cfg.pipinn, 'warm_start_policy', True)):
+        policy_u_net = copy.deepcopy(model_u).eval()
+    else:
+        policy_u_net = None
     global_epoch = 0
     show_progress = bool(getattr(cfg.pipinn, 'show_progress', False))
     show_epoch_progress = bool(getattr(cfg.pipinn, 'show_epoch_progress', False))

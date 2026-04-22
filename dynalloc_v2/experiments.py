@@ -343,6 +343,7 @@ def _fit_dynamic_policy_backend(
     transaction_cost: float,
     progress_label: str | None = None,
     tau_max: float | None = None,
+    prev_trainer: Any = None,
 ) -> tuple[Any, Any, Any]:
     transition = fit_state_transition(state_train, state_train_next, ridge_lambda=cfg.ppgdpo.state_ridge_lambda)
     mu_train_pred = _predict_asset_means_over_sample(mean_model, state_train)
@@ -378,6 +379,7 @@ def _fit_dynamic_policy_backend(
             factor_repr=factor_repr,
             progress_label=progress_label,
             tau_max=tau_max,
+            warm_start_from=prev_trainer,
         )
     else:
         trainer = train_warmup_policy(
@@ -639,6 +641,9 @@ def _write_benchmark_notes(
             'ppgdpo / ppgdpo_zero / ppgdpo_regime_gated remain the main mechanism-comparison strategies',
         ],
     }
+    if str(backend).lower() == 'pipinn':
+        payload['pipinn_ansatz_mode'] = str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform'))
+        payload['pipinn_policy_output_mode'] = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp'))
     if 'market' in set(standard_benchmarks):
         payload['market_benchmark_source'] = market_source
     path = output_dir / 'benchmark_notes.yaml'
@@ -899,6 +904,9 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 cfg, states, returns, factors, train_dates
             )
             progress_label = f"{pd.Timestamp(date_t).strftime('%Y-%m')} [{pd.Timestamp(train_dates[0]).strftime('%Y-%m')}→{pd.Timestamp(train_dates[-1]).strftime('%Y-%m')}]"
+            
+            # extract previous trainer from cache for warm-start (None on first refit)
+            prev_trainer_for_warm = cached[5] if cached is not None else None
             _transition, cross_est, trainer = _fit_dynamic_policy_backend(
                 cfg,
                 state_train=state_train,
@@ -910,6 +918,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 transaction_cost=tc,
                 progress_label=progress_label,
                 tau_max=tau_remaining if backend == 'pipinn' else None,
+                prev_trainer=prev_trainer_for_warm,
             )
             sample_cov_train = _sample_covariance(ret_train_next)
             # cached = (factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train)
@@ -991,26 +1000,54 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             targets[('pgdpo', reference_cross_mode)] = pgdpo_w
             for cross_mode in cross_modes:
                 cross_mat = cross_lookup.get(str(cross_mode), cross_base)
-                ppgdpo_w, proj_debug = solve_ppgdpo_projection(
-                    mu=mu_arr,
-                    cov=cov_eval,
-                    cross_mat=cross_mat,
-                    costates=last_costates,
-                    risky_cap=cfg.policy.risky_cap,
-                    cash_floor=cfg.policy.cash_floor,
-                    wealth=1.0,
-                    cross_scale=cfg.ppgdpo.cross_strength,
-                    eps_bar=cfg.ppgdpo.eps_bar,
-                    ridge=cfg.ppgdpo.newton_ridge,
-                    tau=cfg.ppgdpo.newton_tau,
-                    armijo=cfg.ppgdpo.newton_armijo,
-                    backtrack=cfg.ppgdpo.newton_backtrack,
-                    max_newton=cfg.ppgdpo.max_newton,
-                    tol_grad=cfg.ppgdpo.tol_grad,
-                    max_ls=cfg.ppgdpo.max_line_search,
-                    interior_margin=cfg.ppgdpo.interior_margin,
-                    clamp_neg_jxx_min=cfg.ppgdpo.clamp_neg_jxx_min,
-                )
+                # ppgdpo_w, proj_debug = solve_ppgdpo_projection(
+                #     mu=mu_arr,
+                #     cov=cov_eval,
+                #     cross_mat=cross_mat,
+                #     costates=last_costates,
+                #     risky_cap=cfg.policy.risky_cap,
+                #     cash_floor=cfg.policy.cash_floor,
+                #     wealth=1.0,
+                #     cross_scale=cfg.ppgdpo.cross_strength,
+                #     eps_bar=cfg.ppgdpo.eps_bar,
+                #     ridge=cfg.ppgdpo.newton_ridge,
+                #     tau=cfg.ppgdpo.newton_tau,
+                #     armijo=cfg.ppgdpo.newton_armijo,
+                #     backtrack=cfg.ppgdpo.newton_backtrack,
+                #     max_newton=cfg.ppgdpo.max_newton,
+                #     tol_grad=cfg.ppgdpo.tol_grad,
+                #     max_ls=cfg.ppgdpo.max_line_search,
+                #     interior_margin=cfg.ppgdpo.interior_margin,
+                #     clamp_neg_jxx_min=cfg.ppgdpo.clamp_neg_jxx_min,
+                # )
+                if backend == 'pipinn' and str(getattr(cfg.pipinn, 'policy_output_mode', 'projection')).lower() == 'pure_qp':
+                    ppgdpo_w, proj_debug = trainer.policy_weights_with_debug(
+                        state_row,
+                        covariance=cov_eval,
+                        cross_mat=cross_mat,
+                        tau=tau_remaining,
+                    )
+                else:
+                    ppgdpo_w, proj_debug = solve_ppgdpo_projection(
+                        mu=mu_arr,
+                        cov=cov_eval,
+                        cross_mat=cross_mat,
+                        costates=last_costates,
+                        risky_cap=cfg.policy.risky_cap,
+                        cash_floor=cfg.policy.cash_floor,
+                        wealth=1.0,
+                        cross_scale=cfg.ppgdpo.cross_strength,
+                        eps_bar=cfg.ppgdpo.eps_bar,
+                        ridge=cfg.ppgdpo.newton_ridge,
+                        tau=cfg.ppgdpo.newton_tau,
+                        armijo=cfg.ppgdpo.newton_armijo,
+                        backtrack=cfg.ppgdpo.newton_backtrack,
+                        max_newton=cfg.ppgdpo.max_newton,
+                        tol_grad=cfg.ppgdpo.tol_grad,
+                        max_ls=cfg.ppgdpo.max_line_search,
+                        interior_margin=cfg.ppgdpo.interior_margin,
+                        clamp_neg_jxx_min=cfg.ppgdpo.clamp_neg_jxx_min,
+                    )
                 last_proj_debug[cross_mode] = proj_debug
                 targets[('ppgdpo', cross_mode)] = ppgdpo_w
             if 'equal_weight' in benchmark_set:

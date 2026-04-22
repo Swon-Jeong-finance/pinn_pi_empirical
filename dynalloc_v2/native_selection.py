@@ -140,6 +140,7 @@ class SelectionLitePPGDPOConfig:
     pipinn_width: int = 96
     pipinn_depth: int = 4
     pipinn_covariance_train_mode: str = 'dcc_current'
+    pipinn_ansatz_mode: str = 'ansatz_log_transform'
     pipinn_policy_output_mode: str = 'projection'
     pipinn_emit_frozen_traincov_strategy: bool = False
     pipinn_save_training_logs: bool = True
@@ -1012,6 +1013,7 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             width=int(lite_cfg.pipinn_width),
             depth=int(lite_cfg.pipinn_depth),
             covariance_train_mode=str(lite_cfg.pipinn_covariance_train_mode),
+            ansatz_mode=str(lite_cfg.pipinn_ansatz_mode),
             emit_frozen_traincov_strategy=bool(lite_cfg.pipinn_emit_frozen_traincov_strategy),
             save_training_logs=bool(lite_cfg.pipinn_save_training_logs),
             show_progress=bool(lite_cfg.pipinn_show_progress),
@@ -1045,6 +1047,7 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'width': int(lite_cfg.pipinn_width),
         'depth': int(lite_cfg.pipinn_depth),
         'covariance_train_mode': str(lite_cfg.pipinn_covariance_train_mode),
+        'ansatz_mode': str(lite_cfg.pipinn_ansatz_mode),
         'policy_output_mode': str(lite_cfg.pipinn_policy_output_mode),
         'emit_frozen_traincov_strategy': bool(lite_cfg.pipinn_emit_frozen_traincov_strategy),
         'save_training_logs': bool(lite_cfg.pipinn_save_training_logs),
@@ -1428,6 +1431,7 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.width = int(lite_cfg.pipinn_width)
         out.pipinn.depth = int(lite_cfg.pipinn_depth)
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
+        out.pipinn.ansatz_mode = str(lite_cfg.pipinn_ansatz_mode)
         out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
         out.pipinn.emit_frozen_traincov_strategy = bool(lite_cfg.pipinn_emit_frozen_traincov_strategy)
         out.pipinn.save_training_logs = bool(lite_cfg.pipinn_save_training_logs)
@@ -1837,6 +1841,7 @@ def native_select_factor_suite(
     pipinn_width: int = 96,
     pipinn_depth: int = 4,
     pipinn_covariance_train_mode: str = 'dcc_current',
+    pipinn_ansatz_mode: str = 'ansatz_log_transform',
     pipinn_policy_output_mode: str = 'projection',
     pipinn_emit_frozen_traincov_strategy: bool = False,
     pipinn_save_training_logs: bool = True,
@@ -1951,6 +1956,7 @@ def native_select_factor_suite(
         pipinn_width=int(pipinn_width),
         pipinn_depth=int(pipinn_depth),
         pipinn_covariance_train_mode=str(pipinn_covariance_train_mode),
+        pipinn_ansatz_mode=str(pipinn_ansatz_mode),
         pipinn_policy_output_mode=str(pipinn_policy_output_mode),
         pipinn_emit_frozen_traincov_strategy=bool(pipinn_emit_frozen_traincov_strategy),
         pipinn_save_training_logs=bool(pipinn_save_training_logs),
