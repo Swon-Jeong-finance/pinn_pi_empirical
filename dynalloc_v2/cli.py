@@ -179,6 +179,9 @@ def cmd_select_native_suite(args):
         pipinn_covariance_train_mode=args.pipinn_covariance_train_mode,
         pipinn_ansatz_mode=args.pipinn_ansatz_mode,
         pipinn_policy_output_mode=args.pipinn_policy_output_mode,
+        pipinn_eval_tau_mode=args.pipinn_eval_tau_mode,
+        pipinn_eval_tau_maturity_years=args.pipinn_eval_tau_maturity_years,
+        pipinn_eval_tau_reset_on_refit=bool(args.pipinn_eval_tau_reset_on_refit),
         pipinn_emit_frozen_traincov_strategy=bool(args.pipinn_emit_frozen_traincov_strategy),
         pipinn_save_training_logs=bool(not args.disable_pipinn_save_training_logs),
         pipinn_show_progress=bool(args.pipinn_show_progress),
@@ -307,6 +310,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-covariance-train-mode', choices=['dcc_current', 'cross_resid'], default='dcc_current')
     p_native.add_argument('--pipinn-ansatz-mode',choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'], default='ansatz_normalization_log_transform')
     p_native.add_argument('--pipinn-policy-output-mode', choices=['projection', 'pure_qp'], default='pure_qp')
+    p_native.add_argument('--pipinn-eval-tau-mode', choices=['test_remaining', 'maturity_declining', 'maturity_constant'], default='maturity_constant')
+    p_native.add_argument('--pipinn-eval-tau-maturity-years', type=int, default=1)
+    p_native.add_argument('--pipinn-eval-tau-reset-on-refit', action='store_true')
     p_native.add_argument('--pipinn-emit-frozen-traincov-strategy', action='store_true')
     p_native.add_argument('--disable-pipinn-save-training-logs', action='store_true')
     p_native.add_argument('--pipinn-show-progress', action='store_true')

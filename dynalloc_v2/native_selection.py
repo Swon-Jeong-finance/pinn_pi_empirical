@@ -143,6 +143,9 @@ class SelectionLitePPGDPOConfig:
     pipinn_covariance_train_mode: str = 'dcc_current'
     pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform'
     pipinn_policy_output_mode: str = 'projection'
+    pipinn_eval_tau_mode: str = 'maturity_constant'
+    pipinn_eval_tau_maturity_years: int = 1
+    pipinn_eval_tau_reset_on_refit: bool = False
     pipinn_emit_frozen_traincov_strategy: bool = False
     pipinn_save_training_logs: bool = True
     pipinn_show_progress: bool = False
@@ -1028,6 +1031,9 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             covariance_train_mode=str(lite_cfg.pipinn_covariance_train_mode),
             ansatz_mode=str(lite_cfg.pipinn_ansatz_mode),
             policy_output_mode=str(lite_cfg.pipinn_policy_output_mode),
+            eval_tau_mode=str(lite_cfg.pipinn_eval_tau_mode),
+            eval_tau_maturity_years=int(lite_cfg.pipinn_eval_tau_maturity_years),
+            eval_tau_reset_on_refit=bool(lite_cfg.pipinn_eval_tau_reset_on_refit),
             emit_frozen_traincov_strategy=bool(lite_cfg.pipinn_emit_frozen_traincov_strategy),
             save_training_logs=bool(lite_cfg.pipinn_save_training_logs),
             show_progress=bool(lite_cfg.pipinn_show_progress),
@@ -1063,6 +1069,9 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'covariance_train_mode': str(lite_cfg.pipinn_covariance_train_mode),
         'ansatz_mode': str(lite_cfg.pipinn_ansatz_mode),
         'policy_output_mode': str(lite_cfg.pipinn_policy_output_mode),
+        'eval_tau_mode': str(lite_cfg.pipinn_eval_tau_mode),
+        'eval_tau_maturity_years': int(lite_cfg.pipinn_eval_tau_maturity_years),
+        'eval_tau_reset_on_refit': bool(lite_cfg.pipinn_eval_tau_reset_on_refit),
         'emit_frozen_traincov_strategy': bool(lite_cfg.pipinn_emit_frozen_traincov_strategy),
         'save_training_logs': bool(lite_cfg.pipinn_save_training_logs),
         'show_progress': bool(lite_cfg.pipinn_show_progress),
@@ -1447,6 +1456,9 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
         out.pipinn.ansatz_mode = str(lite_cfg.pipinn_ansatz_mode)
         out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
+        out.pipinn.eval_tau_mode = str(lite_cfg.pipinn_eval_tau_mode)
+        out.pipinn.eval_tau_maturity_years = int(lite_cfg.pipinn_eval_tau_maturity_years)
+        out.pipinn.eval_tau_reset_on_refit = bool(lite_cfg.pipinn_eval_tau_reset_on_refit)
         out.pipinn.emit_frozen_traincov_strategy = bool(lite_cfg.pipinn_emit_frozen_traincov_strategy)
         out.pipinn.save_training_logs = bool(lite_cfg.pipinn_save_training_logs)
         out.pipinn.show_progress = bool(lite_cfg.pipinn_show_progress)
@@ -1895,7 +1907,10 @@ def native_select_factor_suite(
     pipinn_depth: int = 4,
     pipinn_covariance_train_mode: str = 'dcc_current',
     pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform',
-    pipinn_policy_output_mode: str = 'projection',
+    pipinn_policy_output_mode: str = 'pure_qp',
+    pipinn_eval_tau_mode: str = 'maturity_constant',
+    pipinn_eval_tau_maturity_years: int = 1,
+    pipinn_eval_tau_reset_on_refit: bool = False,
     pipinn_emit_frozen_traincov_strategy: bool = False,
     pipinn_save_training_logs: bool = True,
     pipinn_show_progress: bool = False,
@@ -2013,6 +2028,9 @@ def native_select_factor_suite(
         pipinn_covariance_train_mode=str(pipinn_covariance_train_mode),
         pipinn_ansatz_mode=str(pipinn_ansatz_mode),
         pipinn_policy_output_mode=str(pipinn_policy_output_mode),
+        pipinn_eval_tau_mode=str(pipinn_eval_tau_mode),
+        pipinn_eval_tau_maturity_years=int(pipinn_eval_tau_maturity_years),
+        pipinn_eval_tau_reset_on_refit=bool(pipinn_eval_tau_reset_on_refit),
         pipinn_emit_frozen_traincov_strategy=bool(pipinn_emit_frozen_traincov_strategy),
         pipinn_save_training_logs=bool(pipinn_save_training_logs),
         pipinn_show_progress=bool(pipinn_show_progress),
