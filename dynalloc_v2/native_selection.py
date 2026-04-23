@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -140,7 +141,7 @@ class SelectionLitePPGDPOConfig:
     pipinn_width: int = 96
     pipinn_depth: int = 4
     pipinn_covariance_train_mode: str = 'dcc_current'
-    pipinn_ansatz_mode: str = 'ansatz_log_transform'
+    pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform'
     pipinn_policy_output_mode: str = 'projection'
     pipinn_emit_frozen_traincov_strategy: bool = False
     pipinn_save_training_logs: bool = True
@@ -177,6 +178,18 @@ class _PairedBlockData:
 
 _MISSING_SCORE_PENALTY = -1.0e6
 
+def _parse_stage2_device_pool(value: str | None, *, fallback: str) -> list[str]:
+    if value is None:
+        tokens: list[str] = []
+    else:
+        text = str(value).strip()
+        if not text:
+            tokens = []
+        else:
+            tokens = [tok.strip() for tok in text.split(',') if tok.strip()]
+    if not tokens:
+        tokens = [str(fallback)]
+    return tokens
 
 def _load_panel(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
@@ -1014,6 +1027,7 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             depth=int(lite_cfg.pipinn_depth),
             covariance_train_mode=str(lite_cfg.pipinn_covariance_train_mode),
             ansatz_mode=str(lite_cfg.pipinn_ansatz_mode),
+            policy_output_mode=str(lite_cfg.pipinn_policy_output_mode),
             emit_frozen_traincov_strategy=bool(lite_cfg.pipinn_emit_frozen_traincov_strategy),
             save_training_logs=bool(lite_cfg.pipinn_save_training_logs),
             show_progress=bool(lite_cfg.pipinn_show_progress),
@@ -1777,6 +1791,43 @@ def _attach_selected_rolling_protocol_columns(summary_df: pd.DataFrame, selected
     out['selected_rolling_validation_score_mean'] = out['model_id'].map(mapping_score)
     return out
 
+def _fail_if_validation_issues(
+    *,
+    rows_df: pd.DataFrame,
+    context: str,
+    log_path: Path,
+) -> None:
+    if rows_df.empty:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        msg = f'[{context}] validation rows are empty'
+        log_path.write_text(msg + '\n', encoding='utf-8')
+        raise RuntimeError(msg)
+    problems: list[str] = []
+    if 'error' in rows_df.columns:
+        err_df = rows_df.loc[rows_df['error'].notna()].copy()
+        if not err_df.empty:
+            for _, row in err_df.head(20).iterrows():
+                problems.append(
+                    f"[{context}] error spec={row.get('spec')} model_id={row.get('model_id')} "
+                    f"protocol={row.get('selection_protocol_name', row.get('oos_protocol'))} "
+                    f"block={row.get('block')}: {row.get('error')}"
+                )
+    if 'validation_score' in rows_df.columns:
+        score = pd.to_numeric(rows_df['validation_score'], errors='coerce')
+        bad = rows_df.loc[~np.isfinite(score)].copy()
+        if not bad.empty:
+            for _, row in bad.head(20).iterrows():
+                problems.append(
+                    f"[{context}] NaN validation_score spec={row.get('spec')} model_id={row.get('model_id')} "
+                    f"protocol={row.get('selection_protocol_name', row.get('oos_protocol'))} block={row.get('block')}"
+                )
+    if problems:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text('\n'.join(problems) + '\n', encoding='utf-8')
+        raise RuntimeError(
+            f'Validation failed in {context}: {len(problems)} issue(s). '
+            f'See {log_path}'
+        )
 
 def _update_entry_metadata_with_selected_protocols(entry: dict[str, Any], selected_payload: dict[str, Any] | None) -> None:
     if not selected_payload:
@@ -1812,6 +1863,8 @@ def native_select_factor_suite(
     selection_split_mode: str = 'trailing_holdout',
     selection_val_months: int = 240,
     selection_device: str = 'cpu',
+    stage2_max_parallel: int = 1,
+    stage2_devices: str | None = None,
     ppgdpo_lite_epochs: int = 40,
     ppgdpo_lite_mc_rollouts: int = 256,
     ppgdpo_lite_mc_sub_batch: int = 256,
@@ -1841,7 +1894,7 @@ def native_select_factor_suite(
     pipinn_width: int = 96,
     pipinn_depth: int = 4,
     pipinn_covariance_train_mode: str = 'dcc_current',
-    pipinn_ansatz_mode: str = 'ansatz_log_transform',
+    pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform',
     pipinn_policy_output_mode: str = 'projection',
     pipinn_emit_frozen_traincov_strategy: bool = False,
     pipinn_save_training_logs: bool = True,
@@ -1851,6 +1904,8 @@ def native_select_factor_suite(
     select_rolling_oos_window: bool = True,
     rolling_oos_window_grid: list[int] | tuple[int, ...] | None = None,
     selection_protocols: list[str] | tuple[str, ...] | None = None,
+    fail_on_validation_error: bool = False,
+    validation_error_log: str | Path | None = None,
     legacy_stage1_v1_root: str | Path | None = None,
     split_profile_override: str | None = None,
     split_train_start_override: str | None = None,
@@ -2252,14 +2307,21 @@ def native_select_factor_suite(
     if diagnostic_units:
         stage1_unit_lookup = stage1_df.set_index('selection_unit_id')
         stage2_eval_root = ensure_dir(out_dir / 'selection' / 'stage2_protocol_covariance_eval')
-        for unit_id in diagnostic_units:
+        stage2_device_pool = _parse_stage2_device_pool(stage2_devices, fallback=str(lite_cfg.device))
+        max_parallel = int(max(1, stage2_max_parallel))
+        max_parallel = int(min(max_parallel, len(diagnostic_units)))
+
+        def _evaluate_stage2_for_unit(unit_id: str, assigned_device: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
             unit_row = stage1_unit_lookup.loc[unit_id]
             spec_name = str(unit_row['spec'])
             protocol = str(unit_row['selection_protocol_name'])
             proto_meta = _protocol_row_payload(protocol)
             candidate = candidate_lookup[spec_name]
+            unit_stage2_rows: list[dict[str, Any]] = []
+            unit_stage2_block_rows: list[dict[str, Any]] = []
             for model_spec in stage2_model_specs:
                 cov_lite_cfg = _lite_cfg_for_stage2_model(lite_cfg, model_spec, mean_model_kind=str(unit_row.get('mean_model_kind') or 'factor_apt'))
+                cov_lite_cfg = replace(cov_lite_cfg, device=str(assigned_device), pipinn_device=str(assigned_device))
                 block_metrics: list[dict[str, Any]] = []
                 for block in blocks:
                     try:
@@ -2279,12 +2341,14 @@ def native_select_factor_suite(
                             config_stem=str(meta.get('config_stem', 'native')),
                             output_root=stage2_eval_root,
                         )
+                        metrics = {**metrics, 'assigned_device': str(assigned_device)}
                         block_metrics.append(metrics)
                         stage2_block_rows.append({**metrics, 'error': None})
+                        unit_stage2_block_rows.append({**metrics, 'error': None})
                     except Exception as exc:  # noqa: BLE001
                         train_dates = pd.DatetimeIndex(block.get('train_dates', []))
                         val_dates = pd.DatetimeIndex(block.get('val_dates', []))
-                        stage2_block_rows.append({
+                        unit_stage2_block_rows.append({
                             'selection_unit_id': unit_id,
                             'spec': spec_name,
                             **proto_meta,
@@ -2319,10 +2383,11 @@ def native_select_factor_suite(
                             'validation_turnover_est': np.nan,
                             'validation_max_drawdown_est': np.nan,
                             'validation_score': np.nan,
+                            'assigned_device': str(assigned_device),
                             'error': str(exc),
                         })
                 valid = [row for row in block_metrics if np.isfinite(row.get('validation_score', np.nan))]
-                stage2_rows.append({
+                unit_stage2_rows.append({
                     'selection_unit_id': unit_id,
                     'spec': spec_name,
                     **proto_meta,
@@ -2349,7 +2414,26 @@ def native_select_factor_suite(
                     'ppgdpo_lite_ce_delta_risk_parity_mean': float(np.nanmean([row['validation_ce_delta_risk_parity'] for row in valid])) if valid else np.nan,
                     'ppgdpo_lite_sharpe_mean': float(np.nanmean([row['validation_sharpe_est'] for row in valid])) if valid else np.nan,
                     'ppgdpo_lite_train_objective_mean': np.nan,
+                    'assigned_device': str(assigned_device),
                 })
+            return unit_stage2_rows, unit_stage2_block_rows
+
+        if max_parallel <= 1:
+            for unit_index, unit_id in enumerate(diagnostic_units):
+                assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
+                unit_rows, unit_block_rows = _evaluate_stage2_for_unit(str(unit_id), assigned_device)
+                stage2_rows.extend(unit_rows)
+                stage2_block_rows.extend(unit_block_rows)
+        else:
+            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                futures = []
+                for unit_index, unit_id in enumerate(diagnostic_units):
+                    assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
+                    futures.append(executor.submit(_evaluate_stage2_for_unit, str(unit_id), assigned_device))
+                for fut in as_completed(futures):
+                    unit_rows, unit_block_rows = fut.result()
+                    stage2_rows.extend(unit_rows)
+                    stage2_block_rows.extend(unit_block_rows)
 
     stage2_df = pd.DataFrame(stage2_rows)
     if 'model_id' not in stage2_df.columns:
@@ -2360,7 +2444,7 @@ def native_select_factor_suite(
             'ppgdpo_lite_equal_weight_ce_mean', 'ppgdpo_lite_min_variance_ce_mean', 'ppgdpo_lite_risk_parity_ce_mean',
             'ppgdpo_lite_ce_delta_predictive_static_mean', 'ppgdpo_lite_ce_delta_myopic_mean', 'ppgdpo_lite_ce_delta_zero_mean',
             'ppgdpo_lite_ce_delta_equal_weight_mean', 'ppgdpo_lite_ce_delta_min_variance_mean', 'ppgdpo_lite_ce_delta_risk_parity_mean',
-            'ppgdpo_lite_sharpe_mean', 'ppgdpo_lite_train_objective_mean',
+            'ppgdpo_lite_sharpe_mean', 'ppgdpo_lite_train_objective_mean', 'assigned_device',
         ])
     if 'ppgdpo_lite_predictive_static_ce_mean' not in stage2_df.columns and 'ppgdpo_lite_myopic_ce_mean' in stage2_df.columns:
         stage2_df['ppgdpo_lite_predictive_static_ce_mean'] = stage2_df['ppgdpo_lite_myopic_ce_mean']
@@ -2371,7 +2455,12 @@ def native_select_factor_suite(
     selection_stage2_csv = sel_dir / 'spec_selection_stage2_summary.csv'
     selection_ppgdpo_blocks_csv = sel_dir / 'spec_selection_ppgdpo_blocks.csv'
     stage2_df.to_csv(selection_stage2_csv, index=False)
-    pd.DataFrame(stage2_block_rows).to_csv(selection_ppgdpo_blocks_csv, index=False)
+    # pd.DataFrame(stage2_block_rows).to_csv(selection_ppgdpo_blocks_csv, index=False)
+    stage2_block_df = pd.DataFrame(stage2_block_rows)
+    stage2_block_df.to_csv(selection_ppgdpo_blocks_csv, index=False)
+    if bool(fail_on_validation_error):
+        log_path = Path(validation_error_log).expanduser().resolve() if validation_error_log is not None else (sel_dir / 'validation_errors.log')
+        _fail_if_validation_issues(rows_df=stage2_block_df, context='stage2_protocol_covariance_eval', log_path=log_path)
 
     stage1_only_df = stage1_df[~stage1_df['diagnostic_stage2']].copy()
     stage1_only_df['model_id'] = stage1_only_df['selection_unit_id'].map(lambda s: f'{s}__stage1_only')
@@ -2780,6 +2869,8 @@ def native_select_factor_suite(
         'ppgdpo_lite': {
             'optimizer_backend': str(lite_cfg.optimizer_backend),
             'device': lite_cfg.device,
+            'stage2_max_parallel': int(max(1, stage2_max_parallel)),
+            'stage2_devices': _parse_stage2_device_pool(stage2_devices, fallback=str(lite_cfg.device)),
             'epochs': lite_cfg.epochs,
             'covariance_mode': lite_cfg.covariance_mode,
             'mc_rollouts': lite_cfg.mc_rollouts,
@@ -2876,6 +2967,8 @@ def native_select_factor_suite(
         'ppgdpo_lite': {
             'optimizer_backend': str(lite_cfg.optimizer_backend),
             'device': lite_cfg.device,
+            'stage2_max_parallel': int(max(1, stage2_max_parallel)),
+            'stage2_devices': _parse_stage2_device_pool(stage2_devices, fallback=str(lite_cfg.device)),
             'epochs': lite_cfg.epochs,
             'covariance_mode': lite_cfg.covariance_mode,
             'mc_rollouts': lite_cfg.mc_rollouts,

@@ -146,6 +146,8 @@ def cmd_select_native_suite(args):
         selection_split_mode=args.selection_split_mode,
         selection_val_months=args.selection_val_months,
         selection_device=args.selection_device,
+        stage2_max_parallel=args.stage2_max_parallel,
+        stage2_devices=args.stage2_devices,
         ppgdpo_lite_epochs=args.ppgdpo_lite_epochs,
         ppgdpo_lite_mc_rollouts=args.ppgdpo_lite_mc_rollouts,
         ppgdpo_lite_mc_sub_batch=args.ppgdpo_lite_mc_sub_batch,
@@ -265,19 +267,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--min-train-months', type=int, default=192)
     p_native.add_argument('--rolling-window', type=int, default=60)
     p_native.add_argument('--window-mode', choices=['rolling', 'expanding'], default='rolling')
-    p_native.add_argument('--candidate-zoo', choices=['pls_only', 'factor_zoo_v1', 'factor_zoo_v2'], default='factor_zoo_v1')
+    p_native.add_argument('--candidate-zoo', choices=['pls_only', 'factor_zoo_v1', 'factor_zoo_v2'], default='factor_zoo_v2')
     p_native.add_argument('--max-candidates', type=int, default=None)
     p_native.add_argument('--rerank-top-n', type=int, default=8)
     p_native.add_argument('--selection-split-mode', choices=['trailing_holdout', 'expanding_cv'], default='trailing_holdout')
     p_native.add_argument('--selection-val-months', type=int, default=240)
     p_native.add_argument('--selection-device', default='cpu')
+    p_native.add_argument('--stage2-max-parallel', type=int, default=1, help='Number of stage2 unit_id evaluations to run concurrently.')
+    p_native.add_argument('--stage2-devices', default=None, help='Comma-separated device list for stage2 unit_id scheduling. Example: cuda:0,cuda:1')
     p_native.add_argument('--ppgdpo-lite-epochs', type=int, default=40)
     p_native.add_argument('--ppgdpo-lite-mc-rollouts', type=int, default=256)
     p_native.add_argument('--ppgdpo-lite-mc-sub-batch', type=int, default=256)
     p_native.add_argument('--selection-transaction-cost-bps', type=float, default=0.0)
     p_native.add_argument('--ppgdpo-lite-covariance-mode', choices=['full', 'diag'], default='full')
     
-    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn'], default='ppgdpo')
+    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn'], default='pipinn')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
     p_native.add_argument('--pipinn-outer-iters', type=int, default=10)
@@ -301,11 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-width', type=int, default=128)
     p_native.add_argument('--pipinn-depth', type=int, default=3)
     p_native.add_argument('--pipinn-covariance-train-mode', choices=['dcc_current', 'cross_resid'], default='dcc_current')
-    p_native.add_argument(
-        '--pipinn-ansatz-mode',
-        choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'],
-        default='ansatz_log_transform',
-    )
+    p_native.add_argument('--pipinn-ansatz-mode',choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'], default='ansatz_normalization_log_transform')
     p_native.add_argument('--pipinn-policy-output-mode', choices=['projection', 'pure_qp'], default='pure_qp')
     p_native.add_argument('--pipinn-emit-frozen-traincov-strategy', action='store_true')
     p_native.add_argument('--disable-pipinn-save-training-logs', action='store_true')

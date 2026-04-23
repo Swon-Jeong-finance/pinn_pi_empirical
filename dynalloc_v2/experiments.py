@@ -600,6 +600,8 @@ def _write_benchmark_notes(
     benchmark_cross_mode: str,
     market_source: str,
     backend: str = 'ppgdpo',
+    pipinn_ansatz_mode: str | None = None,
+    pipinn_policy_output_mode: str | None = None,
 ) -> Path:
     benchmark_roles = {
         'predictive_static': 'reference_only',
@@ -642,8 +644,8 @@ def _write_benchmark_notes(
         ],
     }
     if str(backend).lower() == 'pipinn':
-        payload['pipinn_ansatz_mode'] = str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform'))
-        payload['pipinn_policy_output_mode'] = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp'))
+        payload['pipinn_ansatz_mode'] = str(pipinn_ansatz_mode or 'ansatz_log_transform')
+        payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or 'pure_qp')
     if 'market' in set(standard_benchmarks):
         payload['market_benchmark_source'] = market_source
     path = output_dir / 'benchmark_notes.yaml'
@@ -1150,7 +1152,10 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         benchmark_cross_mode=benchmark_cross_mode,
         market_source=market_source,
         backend=backend,
+        pipinn_ansatz_mode=str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')) if str(backend).lower() == 'pipinn' else None,
+        pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if str(backend).lower() == 'pipinn' else None,
     )
+    
 
     group_cols = [
         'strategy_display',

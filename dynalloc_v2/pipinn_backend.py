@@ -538,7 +538,7 @@ class TrainedPIPINN:
                 'q_vec': np.asarray(q, dtype=float),
                 'grad_training': np.asarray(grad_training, dtype=float),
                 'grad_raw': np.asarray(grad_raw, dtype=float),
-                'control_update_space': 'alpha',
+                'control_update_space': 'pi',
                 'closed_form_costates': False,
             }
         
