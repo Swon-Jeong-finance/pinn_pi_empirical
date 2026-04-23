@@ -146,6 +146,22 @@ def _prepare_windows(cfg: Config, returns: pd.DataFrame):
     eval_dates = eval_dates[eval_dates.isin(all_dates[:-1])]
     return all_dates, eval_dates
 
+def _resolve_eval_tau(cfg: Config, *, step_idx: int, eval_horizon_months: int, last_refit_step: int) -> float:
+    mode = str(getattr(cfg.pipinn, 'eval_tau_mode', 'test_remaining') or 'test_remaining').strip().lower()
+    if mode == 'test_remaining':
+        return float(max(int(eval_horizon_months) - int(step_idx), 1))
+
+    maturity_years = int(getattr(cfg.pipinn, 'eval_tau_maturity_years', 1) or 1)
+    maturity_months = int(max(maturity_years * 12, 1))
+    reset_on_refit = bool(getattr(cfg.pipinn, 'eval_tau_reset_on_refit', False))
+    elapsed = int(step_idx - last_refit_step) if reset_on_refit else int(step_idx)
+    elapsed = max(elapsed, 0)
+
+    if mode == 'maturity_declining':
+        return float(max(maturity_months - elapsed, 1))
+    if mode == 'maturity_constant':
+        return float(maturity_months)
+    return float(max(int(eval_horizon_months) - int(step_idx), 1))
 
 def _protocol_label(cfg: Config) -> str:
     label = str(cfg.split.protocol_label or '').strip()
@@ -897,7 +913,17 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             continue
 
         refit_now = _should_refit(cfg, i, cached)
-        tau_remaining = float(max(eval_horizon_months - i, 1))
+        tau_refit_anchor = (
+            i
+            if (refit_now and bool(getattr(cfg.pipinn, 'eval_tau_reset_on_refit', False)))
+            else last_refit_step
+        )
+        tau_remaining = _resolve_eval_tau(
+            cfg,
+            step_idx=i,
+            eval_horizon_months=eval_horizon_months,
+            last_refit_step=tau_refit_anchor,
+        )
         if refit_now:
             refit_counter += 1
             last_refit_step = i

@@ -26,3 +26,9 @@ pipinn:
   x_domain_quantile_low: 0.001
   x_domain_quantile_high: 0.999
   x_domain_buffer: 0.20
+  # test_remaining: 전체 테스트 남은 개월수(예: 240, 239, ...)
+  # maturity_declining: 만기기반 감소(예: 2년이면 24, 23, ...)
+  # maturity_constant: 만기기반 고정(예: 2년이면 24, 24, ...)
+  eval_tau_mode: test_remaining
+  eval_tau_maturity_years: 1
+  eval_tau_reset_on_refit: false

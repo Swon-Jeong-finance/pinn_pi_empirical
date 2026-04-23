@@ -180,11 +180,18 @@ class PIPINNConfig(BaseModel):
     show_epoch_progress: bool = False
     auto_output_subdir: bool = False
     output_tag_fields: list[str] = Field(default_factory=list)
+    eval_tau_mode: Literal['test_remaining', 'maturity_declining', 'maturity_constant'] = 'maturity_constant'
+    eval_tau_maturity_years: int = 1
+    eval_tau_reset_on_refit: bool = False
     # walk-forward warm-start: reuse previous window's weights as initialization
     warm_start: bool = False
     warm_start_policy: bool = True  # also warm-start policy_u_net for outer iter 1
 
-
+    @model_validator(mode='after')
+    def _validate_eval_tau(self):
+        if int(self.eval_tau_maturity_years) < 1:
+            raise ValueError('pipinn.eval_tau_maturity_years must be >= 1.')
+        return self
 
 class Config(BaseModel):
     optimizer_backend: Literal['ppgdpo', 'pipinn'] = 'ppgdpo'
