@@ -16,6 +16,7 @@ from dynalloc_v2.native_selection import (
     _comparison_cross_modes_for_covariance_label,
     _expand_stage2_model_specs,
     _legacy_spec_name_for_candidate,
+    _parse_stage2_device_pool,
     _selection_score_mean_first,
     _selection_score_ppgdpo_lite,
     _selection_score_ret_first,
@@ -23,6 +24,10 @@ from dynalloc_v2.native_selection import (
     native_select_factor_suite,
 )
 
+def test_parse_stage2_device_pool_fallback_and_csv():
+    assert _parse_stage2_device_pool(None, fallback='cuda:0') == ['cuda:0']
+    assert _parse_stage2_device_pool('', fallback='cpu') == ['cpu']
+    assert _parse_stage2_device_pool('cuda:0, cuda:1', fallback='cpu') == ['cuda:0', 'cuda:1']
 
 def _write_panel(path: Path, df: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
