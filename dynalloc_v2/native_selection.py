@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1369,6 +1369,128 @@ def _evaluate_stage2_protocol_covariance_block(
         **metrics,
     }
 
+def _evaluate_stage2_for_unit_worker(
+    *,
+    unit_id: str,
+    spec_name: str,
+    protocol: str,
+    mean_model_kind: str,
+    assigned_device: str,
+    candidate: FactorZooCandidate,
+    stage2_model_specs: list[SelectionStage2ModelSpec],
+    blocks: list[dict[str, Any]],
+    selection_split_mode: str,
+    risk_aversion: float,
+    lite_cfg: SelectionLitePPGDPOConfig,
+    split: SelectionSplitSpec,
+    config_stem: str,
+    stage2_eval_root: Path,
+    returns: pd.DataFrame,
+    macro: pd.DataFrame,
+    ff3: pd.DataFrame,
+    ff5: pd.DataFrame,
+    bond: pd.DataFrame,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    proto_meta = _protocol_row_payload(protocol)
+    unit_stage2_rows: list[dict[str, Any]] = []
+    unit_stage2_block_rows: list[dict[str, Any]] = []
+    for model_spec in stage2_model_specs:
+        cov_lite_cfg = _lite_cfg_for_stage2_model(lite_cfg, model_spec, mean_model_kind=mean_model_kind)
+        cov_lite_cfg = replace(cov_lite_cfg, device=str(assigned_device), pipinn_device=str(assigned_device))
+        block_metrics: list[dict[str, Any]] = []
+        for block in blocks:
+            try:
+                metrics = _evaluate_stage2_protocol_covariance_block(
+                    selection_unit_id=unit_id,
+                    candidate=candidate,
+                    returns=returns,
+                    macro=macro,
+                    ff3=ff3,
+                    ff5=ff5,
+                    bond=bond,
+                    block={**block, 'selection_split_mode': selection_split_mode},
+                    protocol=protocol,
+                    risk_aversion=risk_aversion,
+                    lite_cfg=cov_lite_cfg,
+                    split_payload=split,
+                    config_stem=str(config_stem),
+                    output_root=stage2_eval_root,
+                )
+                metrics = {**metrics, 'assigned_device': str(assigned_device)}
+                block_metrics.append(metrics)
+                unit_stage2_block_rows.append({**metrics, 'error': None})
+            except Exception as exc:  # noqa: BLE001
+                train_dates = pd.DatetimeIndex(block.get('train_dates', []))
+                val_dates = pd.DatetimeIndex(block.get('val_dates', []))
+                unit_stage2_block_rows.append({
+                    'selection_unit_id': unit_id,
+                    'spec': spec_name,
+                    **proto_meta,
+                    'model_id': f'{unit_id}__{model_spec.label}',
+                    'stage2_model_label': model_spec.label,
+                    'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
+                    'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
+                    'mean_model_kind': cov_lite_cfg.mean_model_kind,
+                    'cross_policy_label': cov_lite_cfg.cross_policy_label,
+                    'block': str(block.get('label') or 'selection_block'),
+                    'selection_split_mode': str(selection_split_mode),
+                    'train_start_date': str(train_dates[0].date()) if len(train_dates) else None,
+                    'train_end_date': str(train_dates[-1].date()) if len(train_dates) else None,
+                    'val_start_date': str(val_dates[0].date()) if len(val_dates) else None,
+                    'val_end_date': str(val_dates[-1].date()) if len(val_dates) else None,
+                    'train_obs': int(len(train_dates)),
+                    'validation_months': np.nan,
+                    'validation_ce_est': np.nan,
+                    'validation_ce_predictive_static': np.nan,
+                    'validation_ce_myopic': np.nan,
+                    'validation_ce_zero': np.nan,
+                    'validation_ce_equal_weight': np.nan,
+                    'validation_ce_min_variance': np.nan,
+                    'validation_ce_risk_parity': np.nan,
+                    'validation_ce_delta_predictive_static': np.nan,
+                    'validation_ce_delta_myopic': np.nan,
+                    'validation_ce_delta_zero': np.nan,
+                    'validation_ce_delta_equal_weight': np.nan,
+                    'validation_ce_delta_min_variance': np.nan,
+                    'validation_ce_delta_risk_parity': np.nan,
+                    'validation_sharpe_est': np.nan,
+                    'validation_turnover_est': np.nan,
+                    'validation_max_drawdown_est': np.nan,
+                    'validation_score': np.nan,
+                    'assigned_device': str(assigned_device),
+                    'error': str(exc),
+                })
+        valid = [row for row in block_metrics if np.isfinite(row.get('validation_score', np.nan))]
+        unit_stage2_rows.append({
+            'selection_unit_id': unit_id,
+            'spec': spec_name,
+            **proto_meta,
+            'model_id': f'{unit_id}__{model_spec.label}',
+            'stage2_model_label': model_spec.label,
+            'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
+            'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
+            'mean_model_kind': cov_lite_cfg.mean_model_kind,
+            'cross_policy_label': cov_lite_cfg.cross_policy_label,
+            'ppgdpo_lite_blocks_valid': int(len(valid)),
+            'ppgdpo_lite_score_mean': float(np.nanmean([row['validation_score'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_score_q10': float(np.nanquantile(np.asarray([row['validation_score'] for row in valid], dtype=float), 0.10)) if valid else np.nan,
+            'ppgdpo_lite_ce_mean': float(np.nanmean([row['validation_ce_est'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_predictive_static_ce_mean': float(np.nanmean([row['validation_ce_predictive_static'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_myopic_ce_mean': float(np.nanmean([row['validation_ce_myopic'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_equal_weight_ce_mean': float(np.nanmean([row['validation_ce_equal_weight'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_min_variance_ce_mean': float(np.nanmean([row['validation_ce_min_variance'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_risk_parity_ce_mean': float(np.nanmean([row['validation_ce_risk_parity'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_predictive_static_mean': float(np.nanmean([row['validation_ce_delta_predictive_static'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_myopic_mean': float(np.nanmean([row['validation_ce_delta_myopic'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_zero_mean': float(np.nanmean([row['validation_ce_delta_zero'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_equal_weight_mean': float(np.nanmean([row['validation_ce_delta_equal_weight'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_min_variance_mean': float(np.nanmean([row['validation_ce_delta_min_variance'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_risk_parity_mean': float(np.nanmean([row['validation_ce_delta_risk_parity'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_sharpe_mean': float(np.nanmean([row['validation_sharpe_est'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_train_objective_mean': np.nan,
+            'assigned_device': str(assigned_device),
+        })
+    return unit_stage2_rows, unit_stage2_block_rows
 
 
 def _normalize_rolling_oos_window_grid(grid: list[int] | tuple[int, ...] | None) -> list[int]:
@@ -1869,13 +1991,14 @@ def native_select_factor_suite(
     state_q10_floor: float = -0.05,
     cross_warn: float = 0.95,
     cross_fail: float = 0.98,
-    candidate_zoo: str = 'factor_zoo_v1',
+    candidate_zoo: str = 'factor_zoo_v2',
     max_candidates: int | None = None,
     rerank_top_n: int = 5,
     selection_split_mode: str = 'trailing_holdout',
     selection_val_months: int = 240,
     selection_device: str = 'cpu',
     stage2_max_parallel: int = 1,
+    stage2_parallel_backend: str = 'process',
     stage2_devices: str | None = None,
     ppgdpo_lite_epochs: int = 40,
     ppgdpo_lite_mc_rollouts: int = 256,
@@ -2329,125 +2452,46 @@ def native_select_factor_suite(
         max_parallel = int(max(1, stage2_max_parallel))
         max_parallel = int(min(max_parallel, len(diagnostic_units)))
 
-        def _evaluate_stage2_for_unit(unit_id: str, assigned_device: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        stage2_tasks: list[dict[str, Any]] = []
+        for unit_index, unit_id in enumerate(diagnostic_units):
+            assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
             unit_row = stage1_unit_lookup.loc[unit_id]
             spec_name = str(unit_row['spec'])
-            protocol = str(unit_row['selection_protocol_name'])
-            proto_meta = _protocol_row_payload(protocol)
-            candidate = candidate_lookup[spec_name]
-            unit_stage2_rows: list[dict[str, Any]] = []
-            unit_stage2_block_rows: list[dict[str, Any]] = []
-            for model_spec in stage2_model_specs:
-                cov_lite_cfg = _lite_cfg_for_stage2_model(lite_cfg, model_spec, mean_model_kind=str(unit_row.get('mean_model_kind') or 'factor_apt'))
-                cov_lite_cfg = replace(cov_lite_cfg, device=str(assigned_device), pipinn_device=str(assigned_device))
-                block_metrics: list[dict[str, Any]] = []
-                for block in blocks:
-                    try:
-                        metrics = _evaluate_stage2_protocol_covariance_block(
-                            selection_unit_id=unit_id,
-                            candidate=candidate,
-                            returns=returns,
-                            macro=macro,
-                            ff3=ff3,
-                            ff5=ff5,
-                            bond=bond,
-                            block={**block, 'selection_split_mode': selection_split_mode},
-                            protocol=protocol,
-                            risk_aversion=risk_aversion,
-                            lite_cfg=cov_lite_cfg,
-                            split_payload=split,
-                            config_stem=str(meta.get('config_stem', 'native')),
-                            output_root=stage2_eval_root,
-                        )
-                        metrics = {**metrics, 'assigned_device': str(assigned_device)}
-                        block_metrics.append(metrics)
-                        stage2_block_rows.append({**metrics, 'error': None})
-                        unit_stage2_block_rows.append({**metrics, 'error': None})
-                    except Exception as exc:  # noqa: BLE001
-                        train_dates = pd.DatetimeIndex(block.get('train_dates', []))
-                        val_dates = pd.DatetimeIndex(block.get('val_dates', []))
-                        unit_stage2_block_rows.append({
-                            'selection_unit_id': unit_id,
-                            'spec': spec_name,
-                            **proto_meta,
-                            'model_id': f'{unit_id}__{model_spec.label}',
-                            'stage2_model_label': model_spec.label,
-                            'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
-                            'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
-                            'mean_model_kind': cov_lite_cfg.mean_model_kind,
-                            'cross_policy_label': cov_lite_cfg.cross_policy_label,
-                            'block': str(block.get('label') or 'selection_block'),
-                            'selection_split_mode': str(selection_split_mode),
-                            'train_start_date': str(train_dates[0].date()) if len(train_dates) else None,
-                            'train_end_date': str(train_dates[-1].date()) if len(train_dates) else None,
-                            'val_start_date': str(val_dates[0].date()) if len(val_dates) else None,
-                            'val_end_date': str(val_dates[-1].date()) if len(val_dates) else None,
-                            'train_obs': int(len(train_dates)),
-                            'validation_months': np.nan,
-                            'validation_ce_est': np.nan,
-                            'validation_ce_predictive_static': np.nan,
-                            'validation_ce_myopic': np.nan,
-                            'validation_ce_zero': np.nan,
-                            'validation_ce_equal_weight': np.nan,
-                            'validation_ce_min_variance': np.nan,
-                            'validation_ce_risk_parity': np.nan,
-                            'validation_ce_delta_predictive_static': np.nan,
-                            'validation_ce_delta_myopic': np.nan,
-                            'validation_ce_delta_zero': np.nan,
-                            'validation_ce_delta_equal_weight': np.nan,
-                            'validation_ce_delta_min_variance': np.nan,
-                            'validation_ce_delta_risk_parity': np.nan,
-                            'validation_sharpe_est': np.nan,
-                            'validation_turnover_est': np.nan,
-                            'validation_max_drawdown_est': np.nan,
-                            'validation_score': np.nan,
-                            'assigned_device': str(assigned_device),
-                            'error': str(exc),
-                        })
-                valid = [row for row in block_metrics if np.isfinite(row.get('validation_score', np.nan))]
-                unit_stage2_rows.append({
-                    'selection_unit_id': unit_id,
-                    'spec': spec_name,
-                    **proto_meta,
-                    'model_id': f'{unit_id}__{model_spec.label}',
-                    'stage2_model_label': model_spec.label,
-                    'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
-                    'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
-                    'mean_model_kind': cov_lite_cfg.mean_model_kind,
-                    'cross_policy_label': cov_lite_cfg.cross_policy_label,
-                    'ppgdpo_lite_blocks_valid': int(len(valid)),
-                    'ppgdpo_lite_score_mean': float(np.nanmean([row['validation_score'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_score_q10': float(np.nanquantile(np.asarray([row['validation_score'] for row in valid], dtype=float), 0.10)) if valid else np.nan,
-                    'ppgdpo_lite_ce_mean': float(np.nanmean([row['validation_ce_est'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_predictive_static_ce_mean': float(np.nanmean([row['validation_ce_predictive_static'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_myopic_ce_mean': float(np.nanmean([row['validation_ce_myopic'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_equal_weight_ce_mean': float(np.nanmean([row['validation_ce_equal_weight'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_min_variance_ce_mean': float(np.nanmean([row['validation_ce_min_variance'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_risk_parity_ce_mean': float(np.nanmean([row['validation_ce_risk_parity'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_predictive_static_mean': float(np.nanmean([row['validation_ce_delta_predictive_static'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_myopic_mean': float(np.nanmean([row['validation_ce_delta_myopic'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_zero_mean': float(np.nanmean([row['validation_ce_delta_zero'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_equal_weight_mean': float(np.nanmean([row['validation_ce_delta_equal_weight'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_min_variance_mean': float(np.nanmean([row['validation_ce_delta_min_variance'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_risk_parity_mean': float(np.nanmean([row['validation_ce_delta_risk_parity'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_sharpe_mean': float(np.nanmean([row['validation_sharpe_est'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_train_objective_mean': np.nan,
-                    'assigned_device': str(assigned_device),
-                })
-            return unit_stage2_rows, unit_stage2_block_rows
-
+            stage2_tasks.append({
+                'unit_id': str(unit_id),
+                'spec_name': spec_name,
+                'protocol': str(unit_row['selection_protocol_name']),
+                'mean_model_kind': str(unit_row.get('mean_model_kind') or 'factor_apt'),
+                'assigned_device': str(assigned_device),
+                'candidate': candidate_lookup[spec_name],
+                'stage2_model_specs': stage2_model_specs,
+                'blocks': blocks,
+                'selection_split_mode': selection_split_mode,
+                'risk_aversion': risk_aversion,
+                'lite_cfg': lite_cfg,
+                'split': split,
+                'config_stem': str(meta.get('config_stem', 'native')),
+                'stage2_eval_root': stage2_eval_root,
+                'returns': returns,
+                'macro': macro,
+                'ff3': ff3,
+                'ff5': ff5,
+                'bond': bond,
+            })
+            
         if max_parallel <= 1:
-            for unit_index, unit_id in enumerate(diagnostic_units):
-                assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
-                unit_rows, unit_block_rows = _evaluate_stage2_for_unit(str(unit_id), assigned_device)
+            for task in stage2_tasks:
+                unit_rows, unit_block_rows = _evaluate_stage2_for_unit_worker(**task)
                 stage2_rows.extend(unit_rows)
                 stage2_block_rows.extend(unit_block_rows)
         else:
-            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            backend = str(stage2_parallel_backend or 'process').strip().lower()
+            executor_cls: type[ThreadPoolExecutor | ProcessPoolExecutor]
+            executor_cls = ThreadPoolExecutor if backend == 'thread' else ProcessPoolExecutor
+            with executor_cls(max_workers=max_parallel) as executor:
                 futures = []
-                for unit_index, unit_id in enumerate(diagnostic_units):
-                    assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
-                    futures.append(executor.submit(_evaluate_stage2_for_unit, str(unit_id), assigned_device))
+                for task in stage2_tasks:
+                    futures.append(executor.submit(_evaluate_stage2_for_unit_worker, **task))
                 for fut in as_completed(futures):
                     unit_rows, unit_block_rows = fut.result()
                     stage2_rows.extend(unit_rows)
