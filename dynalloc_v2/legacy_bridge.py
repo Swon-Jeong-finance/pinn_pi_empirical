@@ -40,7 +40,7 @@ class BaseGridArtifacts:
     entry_count: int
 
 
-DEFAULT_MARKET_UNIVERSES: tuple[str, ...] = ('ff1', 'ff6', 'ff25', 'ff38', 'ff49', 'ff100')
+DEFAULT_MARKET_UNIVERSES: tuple[str, ...] = ('ff1', 'ff6', 'ff17', 'ff25', 'ff30', 'ff38', 'ff49', 'ff100')
 
 
 def _seed_shared_french_cache(v1_root: Path, cache_dir: Path) -> None:
@@ -150,6 +150,8 @@ def _legacy_loader_asset_universe_name(asset_universe: str) -> str:
     universe = str(asset_universe).strip().lower()
     if universe == 'ff25':
         return 'ff25_szbm'
+    if universe == 'ff49':
+        return 'ff49ind'
     return universe
 
 def _effective_asset_universe(v1_root: Path, profile_name: str, asset_universe_override: str | None = None) -> str:
@@ -191,6 +193,17 @@ _NATIVE_UNIVERSE_SPECS: dict[str, dict[str, Any]] = {
     'ff1': {'patterns': (r'ff1(?!\d)', r'1x1'), 'min_cols': 1, 'max_cols': 2},
     'ff6': {'patterns': (r'ff6(?!\d)', r'2x3', r'6[_-]?port'), 'min_cols': 6, 'max_cols': 8},
     'ff25': {'patterns': (r'ff25(?!\d)', r'5x5', r'25[_-]?port'), 'min_cols': 25, 'max_cols': 30},
+    'ff38': {'patterns': (r'ff38(?!\d)', r'38[_-]?port'), 'min_cols': 38, 'max_cols': 45},
+    'ff49': {'patterns': (r'ff49(?!\d)', r'49[_-]?ind', r'49[_-]?port'), 'min_cols': 49, 'max_cols': 55},
+    'ff100': {'patterns': (r'ff100(?!\d)', r'10x10', r'100[_-]?port'), 'min_cols': 100, 'max_cols': 110},
+}
+
+_NATIVE_UNIVERSE_SPECS: dict[str, dict[str, Any]] = {
+    'ff1': {'patterns': (r'ff1(?!\d)', r'1x1'), 'min_cols': 1, 'max_cols': 2},
+    'ff6': {'patterns': (r'ff6(?!\d)', r'2x3', r'6[_-]?port'), 'min_cols': 6, 'max_cols': 8},
+    'ff17': {'patterns': (r'ff17(?!\d)', r'17[_-]?ind', r'17[_-]?port'), 'min_cols': 17, 'max_cols': 22},
+    'ff25': {'patterns': (r'ff25(?!\d)', r'5x5', r'25[_-]?port'), 'min_cols': 25, 'max_cols': 30},
+    'ff30': {'patterns': (r'ff30(?!\d)', r'30[_-]?ind', r'30[_-]?port'), 'min_cols': 30, 'max_cols': 36},
     'ff38': {'patterns': (r'ff38(?!\d)', r'38[_-]?port'), 'min_cols': 38, 'max_cols': 45},
     'ff49': {'patterns': (r'ff49(?!\d)', r'49[_-]?ind', r'49[_-]?port'), 'min_cols': 49, 'max_cols': 55},
     'ff100': {'patterns': (r'ff100(?!\d)', r'10x10', r'100[_-]?port'), 'min_cols': 100, 'max_cols': 110},
@@ -509,7 +522,9 @@ def build_v1_base_bundle(
     if native_universe is None:
         if modules.asset_universes is None:
             raise RuntimeError('legacy asset_universes module was not imported')
-        eq_total = modules.asset_universes.load_equity_universe_monthly(asset_universe)
+        # eq_total = modules.asset_universes.load_equity_universe_monthly(asset_universe)
+        legacy_asset_universe = _legacy_loader_asset_universe_name(asset_universe)
+        eq_total = modules.asset_universes.load_equity_universe_monthly(legacy_asset_universe)
         universe_loader = 'legacy_v1_asset_universes'
         native_universe_path = None
     else:

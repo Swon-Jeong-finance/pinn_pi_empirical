@@ -147,7 +147,6 @@ def cmd_select_native_suite(args):
         selection_val_months=args.selection_val_months,
         selection_device=args.selection_device,
         stage2_max_parallel=args.stage2_max_parallel,
-        stage2_parallel_backend=args.stage2_parallel_backend,
         stage2_devices=args.stage2_devices,
         ppgdpo_lite_epochs=args.ppgdpo_lite_epochs,
         ppgdpo_lite_mc_rollouts=args.ppgdpo_lite_mc_rollouts,
@@ -278,7 +277,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--selection-val-months', type=int, default=240)
     p_native.add_argument('--selection-device', default='cpu')
     p_native.add_argument('--stage2-max-parallel', type=int, default=1, help='Number of stage2 unit_id evaluations to run concurrently.')
-    p_native.add_argument('--stage2-parallel-backend', choices=['thread', 'process'], default='process', help='Concurrency backend for stage2 unit_id evaluations.')
     p_native.add_argument('--stage2-devices', default=None, help='Comma-separated device list for stage2 unit_id scheduling. Example: cuda:0,cuda:1')
     p_native.add_argument('--ppgdpo-lite-epochs', type=int, default=40)
     p_native.add_argument('--ppgdpo-lite-mc-rollouts', type=int, default=256)
@@ -308,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-scheduler-patience', type=int, default=3)
     p_native.add_argument('--pipinn-min-lr', type=float, default=1.0e-5)
     p_native.add_argument('--pipinn-width', type=int, default=128)
-    p_native.add_argument('--pipinn-depth', type=int, default=2)
+    p_native.add_argument('--pipinn-depth', type=int, default=3)
     p_native.add_argument('--pipinn-covariance-train-mode', choices=['dcc_current', 'cross_resid'], default='dcc_current')
     p_native.add_argument('--pipinn-ansatz-mode',choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'], default='ansatz_normalization_log_transform')
     p_native.add_argument('--pipinn-policy-output-mode', choices=['projection', 'pure_qp'], default='pure_qp')
