@@ -118,52 +118,6 @@ def _solve_qp_long_only_budget_full(
             break
     return pi if v.ndim == 2 else pi.squeeze(0)
 
-@torch.no_grad()
-def _solve_alpha_projected_via_pi_constraints(
-    *,
-    sigma_inv_t_T: torch.Tensor,
-    sigma_t_T: torch.Tensor,
-    q: torch.Tensor,
-    gamma: float,
-    cap: float,
-    iters: int = 150,
-    step_scale: float = 1.2,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Primary alpha-space update with projection through pi-space constraints.
-
-    Objective in alpha-space:
-        max_a  a·q - (gamma/2)||a||^2
-    with implicit feasible set induced by:
-        pi = sigma^{-T} a,  pi >= 0, 1^T pi <= cap.
-    """
-    gamma = float(gamma)
-    cap = float(cap)
-    if cap <= 0.0:
-        z = torch.zeros_like(q)
-        return z, z
-    if q.ndim == 1:
-        q2 = q.view(1, -1)
-    else:
-        q2 = q
-    alpha = q2 / max(gamma, 1.0e-12)
-    lam_max = max(gamma, 1.0e-12)
-    step = 1.0 / (step_scale * lam_max)
-    for _ in range(max(int(iters), 1)):
-        grad = q2 - gamma * alpha
-        alpha_new = alpha + step * grad
-        pi_tmp = torch.matmul(alpha_new, sigma_inv_t_T)
-        pi_proj = _proj_nonneg_l1_ball(pi_tmp, cap)
-        alpha_proj = torch.matmul(pi_proj, sigma_t_T)
-        if torch.max(torch.abs(alpha_proj - alpha)).item() < 1.0e-9:
-            alpha = alpha_proj
-            break
-        alpha = alpha_proj
-    pi = torch.matmul(alpha, sigma_inv_t_T)
-    pi = _proj_nonneg_l1_ball(pi, cap)
-    alpha = torch.matmul(pi, sigma_t_T)
-    return (alpha if q.ndim == 2 else alpha.squeeze(0),
-            pi if q.ndim == 2 else pi.squeeze(0))
-
 class _MLP(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, hidden_layers: int):
         super().__init__()
@@ -510,39 +464,14 @@ class TrainedPIPINN:
         grad_raw = self.env.grad_training_to_raw(grad_training)
         mu_term = np.asarray(mu, dtype=float).reshape(-1)
 
-        if mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}:
-            if str(self.env.policy_output_mode).lower() == 'pure_qp':
-                sigma_dyn = _matrix_sqrt_psd(cov, floor=1.0e-10)
-                sigma_inv = np.linalg.pinv(sigma_dyn)
-                sigma_inv_t_T = torch.tensor(sigma_inv.T, device=self.env.device, dtype=self.env.dtype)
-                sigma_t_T = torch.tensor(sigma_dyn.T, device=self.env.device, dtype=self.env.dtype)
-            else:
-                sigma_inv = self.env.sigma_inv
-                sigma_inv_t_T = self.env.sigma_inv_t_T
-                sigma_t_T = self.env.sigma_train_t.T
-            phi = sigma_inv @ mu_term
-            gamma_cross = sigma_inv @ cross
-            q = phi + gamma_cross @ grad_raw
-            q_t = torch.tensor(q.reshape(1, -1), device=self.env.device, dtype=self.env.dtype)
-            _, pi_t = _solve_alpha_projected_via_pi_constraints(
-                sigma_inv_t_T=sigma_inv_t_T,
-                sigma_t_T=sigma_t_T,
-                q=q_t,
-                gamma=self.env.gamma,
-                cap=self.env.risky_cap,
-            )
-            w = np.asarray(pi_t.squeeze(0).detach().cpu().numpy(), dtype=float)
-            return w, {
-                'mu_term': mu_term,
-                'phi_term': np.asarray(phi, dtype=float),
-                'q_vec': np.asarray(q, dtype=float),
-                'grad_training': np.asarray(grad_training, dtype=float),
-                'grad_raw': np.asarray(grad_raw, dtype=float),
-                'control_update_space': 'pi',
-                'closed_form_costates': False,
-            }
-        
+
         if str(self.env.policy_output_mode).lower() == 'pure_qp':
+            if mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'} and cross_mat is None:
+                cross_for_qp = np.asarray(getattr(self.env, 'C_train_raw', cross), dtype=float)
+            else:
+                cross_for_qp = np.asarray(cross, dtype=float)
+            if cross_for_qp.ndim == 1:
+                cross_for_qp = cross_for_qp.reshape(-1, 1)
             hedge_signal = np.asarray(cross @ grad_raw.reshape(-1), dtype=float).reshape(-1)
             a_vec = mu_term + hedge_signal
             cov_t = torch.tensor(np.asarray(cov, dtype=float), device=self.env.device, dtype=self.env.dtype)
@@ -655,8 +584,8 @@ def _sample_collocation(
 
 def _g_and_derivs(model_u: ValueNet, tau: torch.Tensor, x: torch.Tensor, *, create_graph: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     u = model_u(tau, x)
-    g = torch.exp(torch.clamp(u, min=-20.0, max=20.0))
     ones = torch.ones_like(g)
+    g = torch.exp(u)
     g_tau = torch.autograd.grad(g, tau, grad_outputs=ones, create_graph=create_graph, retain_graph=True)[0]
     g_x = torch.autograd.grad(g, x, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
     return u, g, g_tau, g_x
@@ -712,46 +641,19 @@ def _precompute_policy_coeffs(
             u = policy_u_net(tau_g, x_g)
             u_x = torch.autograd.grad(u, x_g, grad_outputs=torch.ones_like(u), create_graph=False)[0]
         u_x = u_x.detach()
-    mode = str(getattr(env, 'ansatz_mode', 'ansatz_log_transform')).lower()
-    use_normalized_update = mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}
-    if use_normalized_update:
-        phi = torch.matmul(mu, env.sigma_inv_t.T)
-        q = phi + torch.matmul(u_x, env.Gamma_train_t.T)
-        pi: torch.Tensor
-        try:
-            _alpha, pi = _solve_alpha_projected_via_pi_constraints(
-                sigma_inv_t_T=env.sigma_inv_t_T,
-                sigma_t_T=env.sigma_train_t.T,
-                q=q,
-                gamma=env.gamma,
-                cap=env.risky_cap,
-                iters=150,
-                step_scale=1.2,
-            )
-        except Exception:
-            grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
-            v_fb = mu + torch.matmul(grad_raw, env.C_train_raw_t.T)
-            pi = _solve_qp_long_only_budget_full(
-                env.Sigma_train_t,
-                v_fb,
-                gamma=env.gamma,
-                cap=env.risky_cap,
-                iters=300,
-                tol=1.0e-10,
-                step_scale=1.1,
-            )
-    else:
-        hedging = torch.matmul(u_x, env.C_train_t.T)
-        v = mu + hedging
-        pi = _solve_qp_long_only_budget_full(
-            env.Sigma_train_t,
-            v,
-            gamma=env.gamma,
-            cap=env.risky_cap,
-            iters=300,
-            tol=1.0e-10,
-            step_scale=1.1,
-        )
+
+    grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
+    v_fb = mu + torch.matmul(grad_raw, env.C_train_raw_t.T)
+    pi = _solve_qp_long_only_budget_full(
+        env.Sigma_train_t,
+        v_fb,
+        gamma=env.gamma,
+        cap=env.risky_cap,
+        iters=300,
+        tol=1.0e-10,
+        step_scale=1.1,
+    )
+    
     pi_sigma_pi = torch.sum(pi * torch.matmul(pi, env.Sigma_train_t.T), dim=1, keepdim=True)
     r = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
     A = (1.0 - env.gamma) * (r + torch.sum(pi * mu, dim=1, keepdim=True) - 0.5 * env.gamma * pi_sigma_pi)
@@ -834,7 +736,7 @@ def _policy_evaluation(
         tau = train_coeff.tau.detach().clone().requires_grad_(True)
         x = train_coeff.x.detach().clone().requires_grad_(True)
         mode = str(getattr(env, 'ansatz_mode', 'ansatz_log_transform')).lower()
-        if mode == 'ansatz_normalization_log_transform':
+        if mode in {'ansatz_log_transform', 'ansatz_normalization_log_transform'}:
             u_pred, u_tau, u_x = _u_derivs(model_u, tau, x, create_graph=True)
             drift_u = _drift_term(env, x, u_x)
             diff_u = _diffusion_term(env, x, u_x, create_graph=True)
@@ -864,7 +766,7 @@ def _policy_evaluation(
         with torch.enable_grad():
             tau_v = val_coeff.tau.detach().clone().requires_grad_(True)
             x_v = val_coeff.x.detach().clone().requires_grad_(True)
-            if mode == 'ansatz_normalization_log_transform':
+            if mode in {'ansatz_log_transform', 'ansatz_normalization_log_transform'}:
                 u_v, u_tau_v, u_x_v = _u_derivs(model_u, tau_v, x_v, create_graph=False)
                 drift_v = _drift_term(env, x_v, u_x_v)
                 diff_v = _diffusion_term(env, x_v, u_x_v, create_graph=False)

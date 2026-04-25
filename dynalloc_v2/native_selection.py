@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,6 +89,7 @@ class SelectionLitePPGDPOConfig:
     covariance_label: str = 'dcc'
     mean_model_kind: str = 'factor_apt'
     cross_policy_label: str = 'estimated'
+    selection_eval_mode: str = 'projection'
     factor_correlation_mode: str = 'independent'
     use_persistence: bool = False
     adcc_gamma: float = 0.005
@@ -1149,6 +1150,9 @@ def _evaluate_ppgdpo_lite_candidate_block(
     rows: list[dict[str, Any]] = []
     cov_loglik_scores: list[float] = []
     prev_mu_for_cov_update: np.ndarray | None = None
+    eval_mode = str(lite_cfg.selection_eval_mode).lower()
+    if eval_mode not in {'projection', 'pure_qp'}:
+        raise ValueError(f"Unsupported selection_eval_mode={lite_cfg.selection_eval_mode!r}; expected 'projection' or 'pure_qp'")
     cross_arr = cross_est.cross.to_numpy(dtype=float)
     zero_arr = np.zeros_like(cross_arr)
 
@@ -1163,8 +1167,6 @@ def _evaluate_ppgdpo_lite_candidate_block(
         if lite_cfg.covariance_mode == 'diag':
             cov_eval = np.diag(np.diag(cov_eval))
 
-        policy_w = trainer.policy_weights(state_row)
-        costates = trainer.estimate_costates(state_row)
         myopic_w = solve_mean_variance(
             mu,
             cov_eval,
@@ -1173,46 +1175,64 @@ def _evaluate_ppgdpo_lite_candidate_block(
             steps=max(100, lite_cfg.pgd_steps),
             step_size=lite_cfg.step_size,
         )
-        ppgdpo_est_w, _ = solve_ppgdpo_projection(
-            mu=mu,
-            cov=cov_eval,
-            cross_mat=cross_arr,
-            costates=costates,
-            risky_cap=lite_cfg.risky_cap,
-            cash_floor=lite_cfg.cash_floor,
-            wealth=1.0,
-            cross_scale=lite_cfg.cross_strength,
-            eps_bar=lite_cfg.eps_bar,
-            ridge=lite_cfg.newton_ridge,
-            tau=lite_cfg.newton_tau,
-            armijo=lite_cfg.newton_armijo,
-            backtrack=lite_cfg.newton_backtrack,
-            max_newton=lite_cfg.max_newton,
-            tol_grad=lite_cfg.tol_grad,
-            max_ls=lite_cfg.max_line_search,
-            interior_margin=lite_cfg.interior_margin,
-            clamp_neg_jxx_min=lite_cfg.clamp_neg_jxx_min,
-        )
-        ppgdpo_zero_w, _ = solve_ppgdpo_projection(
-            mu=mu,
-            cov=cov_eval,
-            cross_mat=zero_arr,
-            costates=costates,
-            risky_cap=lite_cfg.risky_cap,
-            cash_floor=lite_cfg.cash_floor,
-            wealth=1.0,
-            cross_scale=lite_cfg.cross_strength,
-            eps_bar=lite_cfg.eps_bar,
-            ridge=lite_cfg.newton_ridge,
-            tau=lite_cfg.newton_tau,
-            armijo=lite_cfg.newton_armijo,
-            backtrack=lite_cfg.newton_backtrack,
-            max_newton=lite_cfg.max_newton,
-            tol_grad=lite_cfg.tol_grad,
-            max_ls=lite_cfg.max_line_search,
-            interior_margin=lite_cfg.interior_margin,
-            clamp_neg_jxx_min=lite_cfg.clamp_neg_jxx_min,
-        )
+        if eval_mode == 'pure_qp':
+            if not hasattr(trainer, 'policy_weights_with_debug'):
+                raise RuntimeError(
+                    f"selection_eval_mode='pure_qp' requires trainer.policy_weights_with_debug; "
+                    f"optimizer_backend={lite_cfg.optimizer_backend!r} does not provide it"
+                )
+            ppgdpo_est_w, _ = trainer.policy_weights_with_debug(
+                state_row,
+                covariance=cov_eval,
+                cross_mat=cross_arr,
+            )
+            ppgdpo_zero_w, _ = trainer.policy_weights_with_debug(
+                state_row,
+                covariance=cov_eval,
+                cross_mat=zero_arr,
+            )
+        else:
+            costates = trainer.estimate_costates(state_row)
+            ppgdpo_est_w, _ = solve_ppgdpo_projection(
+                mu=mu,
+                cov=cov_eval,
+                cross_mat=cross_arr,
+                costates=costates,
+                risky_cap=lite_cfg.risky_cap,
+                cash_floor=lite_cfg.cash_floor,
+                wealth=1.0,
+                cross_scale=lite_cfg.cross_strength,
+                eps_bar=lite_cfg.eps_bar,
+                ridge=lite_cfg.newton_ridge,
+                tau=lite_cfg.newton_tau,
+                armijo=lite_cfg.newton_armijo,
+                backtrack=lite_cfg.newton_backtrack,
+                max_newton=lite_cfg.max_newton,
+                tol_grad=lite_cfg.tol_grad,
+                max_ls=lite_cfg.max_line_search,
+                interior_margin=lite_cfg.interior_margin,
+                clamp_neg_jxx_min=lite_cfg.clamp_neg_jxx_min,
+            )
+            ppgdpo_zero_w, _ = solve_ppgdpo_projection(
+                mu=mu,
+                cov=cov_eval,
+                cross_mat=zero_arr,
+                costates=costates,
+                risky_cap=lite_cfg.risky_cap,
+                cash_floor=lite_cfg.cash_floor,
+                wealth=1.0,
+                cross_scale=lite_cfg.cross_strength,
+                eps_bar=lite_cfg.eps_bar,
+                ridge=lite_cfg.newton_ridge,
+                tau=lite_cfg.newton_tau,
+                armijo=lite_cfg.newton_armijo,
+                backtrack=lite_cfg.newton_backtrack,
+                max_newton=lite_cfg.max_newton,
+                tol_grad=lite_cfg.tol_grad,
+                max_ls=lite_cfg.max_line_search,
+                interior_margin=lite_cfg.interior_margin,
+                clamp_neg_jxx_min=lite_cfg.clamp_neg_jxx_min,
+            )
         realized_ret = val_pairs.returns_tp1.iloc[i].to_numpy(dtype=float)
         residual_ret = realized_ret - mu
         cov_loglik_scores.append(_gaussian_quasi_loglik_per_asset(residual_ret, cov_eval))
@@ -1239,6 +1259,7 @@ def _evaluate_ppgdpo_lite_candidate_block(
         'months': int(len(val_pairs.states_t)),
         'train_pairs': int(len(train_pairs.states_t)),
         'train_objective': float(trainer.train_objective),
+        'selection_eval_mode': eval_mode,
     }
     for strategy in ('myopic', 'ppgdpo_est', 'ppgdpo_zero'):
         series = monthly.loc[monthly['strategy'] == strategy, 'net_return'].astype(float)
@@ -1358,6 +1379,7 @@ def _evaluate_stage2_protocol_covariance_block(
         'covariance_model_kind': str(lite_cfg.covariance_model_kind),
         'mean_model_kind': str(lite_cfg.mean_model_kind),
         'cross_policy_label': str(lite_cfg.cross_policy_label),
+        'selection_eval_mode': str(lite_cfg.selection_eval_mode),
         'optimizer_backend': str(lite_cfg.optimizer_backend),
         'block': block_label,
         'selection_split_mode': str(block.get('selection_split_mode') or ''),
@@ -1369,6 +1391,130 @@ def _evaluate_stage2_protocol_covariance_block(
         **metrics,
     }
 
+def _evaluate_stage2_for_unit_worker(
+    *,
+    unit_id: str,
+    spec_name: str,
+    protocol: str,
+    mean_model_kind: str,
+    assigned_device: str,
+    candidate: FactorZooCandidate,
+    stage2_model_specs: list[SelectionStage2ModelSpec],
+    blocks: list[dict[str, Any]],
+    selection_split_mode: str,
+    risk_aversion: float,
+    lite_cfg: SelectionLitePPGDPOConfig,
+    split: SelectionSplitSpec,
+    config_stem: str,
+    stage2_eval_root: Path,
+    returns: pd.DataFrame,
+    macro: pd.DataFrame,
+    ff3: pd.DataFrame,
+    ff5: pd.DataFrame,
+    bond: pd.DataFrame,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    proto_meta = _protocol_row_payload(protocol)
+    unit_stage2_rows: list[dict[str, Any]] = []
+    unit_stage2_block_rows: list[dict[str, Any]] = []
+    for model_spec in stage2_model_specs:
+        cov_lite_cfg = _lite_cfg_for_stage2_model(lite_cfg, model_spec, mean_model_kind=mean_model_kind)
+        cov_lite_cfg = replace(cov_lite_cfg, device=str(assigned_device), pipinn_device=str(assigned_device))
+        block_metrics: list[dict[str, Any]] = []
+        for block in blocks:
+            try:
+                metrics = _evaluate_stage2_protocol_covariance_block(
+                    selection_unit_id=unit_id,
+                    candidate=candidate,
+                    returns=returns,
+                    macro=macro,
+                    ff3=ff3,
+                    ff5=ff5,
+                    bond=bond,
+                    block={**block, 'selection_split_mode': selection_split_mode},
+                    protocol=protocol,
+                    risk_aversion=risk_aversion,
+                    lite_cfg=cov_lite_cfg,
+                    split_payload=split,
+                    config_stem=str(config_stem),
+                    output_root=stage2_eval_root,
+                )
+                metrics = {**metrics, 'assigned_device': str(assigned_device)}
+                block_metrics.append(metrics)
+                unit_stage2_block_rows.append({**metrics, 'error': None})
+            except Exception as exc:  # noqa: BLE001
+                train_dates = pd.DatetimeIndex(block.get('train_dates', []))
+                val_dates = pd.DatetimeIndex(block.get('val_dates', []))
+                unit_stage2_block_rows.append({
+                    'selection_unit_id': unit_id,
+                    'spec': spec_name,
+                    **proto_meta,
+                    'model_id': f'{unit_id}__{model_spec.label}',
+                    'stage2_model_label': model_spec.label,
+                    'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
+                    'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
+                    'mean_model_kind': cov_lite_cfg.mean_model_kind,
+                    'cross_policy_label': cov_lite_cfg.cross_policy_label,
+                    'selection_eval_mode': cov_lite_cfg.selection_eval_mode,
+                    'block': str(block.get('label') or 'selection_block'),
+                    'selection_split_mode': str(selection_split_mode),
+                    'train_start_date': str(train_dates[0].date()) if len(train_dates) else None,
+                    'train_end_date': str(train_dates[-1].date()) if len(train_dates) else None,
+                    'val_start_date': str(val_dates[0].date()) if len(val_dates) else None,
+                    'val_end_date': str(val_dates[-1].date()) if len(val_dates) else None,
+                    'train_obs': int(len(train_dates)),
+                    'validation_months': np.nan,
+                    'validation_ce_est': np.nan,
+                    'validation_ce_predictive_static': np.nan,
+                    'validation_ce_myopic': np.nan,
+                    'validation_ce_zero': np.nan,
+                    'validation_ce_equal_weight': np.nan,
+                    'validation_ce_min_variance': np.nan,
+                    'validation_ce_risk_parity': np.nan,
+                    'validation_ce_delta_predictive_static': np.nan,
+                    'validation_ce_delta_myopic': np.nan,
+                    'validation_ce_delta_zero': np.nan,
+                    'validation_ce_delta_equal_weight': np.nan,
+                    'validation_ce_delta_min_variance': np.nan,
+                    'validation_ce_delta_risk_parity': np.nan,
+                    'validation_sharpe_est': np.nan,
+                    'validation_turnover_est': np.nan,
+                    'validation_max_drawdown_est': np.nan,
+                    'validation_score': np.nan,
+                    'assigned_device': str(assigned_device),
+                    'error': str(exc),
+                })
+        valid = [row for row in block_metrics if np.isfinite(row.get('validation_score', np.nan))]
+        unit_stage2_rows.append({
+            'selection_unit_id': unit_id,
+            'spec': spec_name,
+            **proto_meta,
+            'model_id': f'{unit_id}__{model_spec.label}',
+            'stage2_model_label': model_spec.label,
+            'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
+            'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
+            'mean_model_kind': cov_lite_cfg.mean_model_kind,
+            'cross_policy_label': cov_lite_cfg.cross_policy_label,
+            'selection_eval_mode': cov_lite_cfg.selection_eval_mode,
+            'ppgdpo_lite_blocks_valid': int(len(valid)),
+            'ppgdpo_lite_score_mean': float(np.nanmean([row['validation_score'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_score_q10': float(np.nanquantile(np.asarray([row['validation_score'] for row in valid], dtype=float), 0.10)) if valid else np.nan,
+            'ppgdpo_lite_ce_mean': float(np.nanmean([row['validation_ce_est'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_predictive_static_ce_mean': float(np.nanmean([row['validation_ce_predictive_static'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_myopic_ce_mean': float(np.nanmean([row['validation_ce_myopic'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_equal_weight_ce_mean': float(np.nanmean([row['validation_ce_equal_weight'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_min_variance_ce_mean': float(np.nanmean([row['validation_ce_min_variance'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_risk_parity_ce_mean': float(np.nanmean([row['validation_ce_risk_parity'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_predictive_static_mean': float(np.nanmean([row['validation_ce_delta_predictive_static'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_myopic_mean': float(np.nanmean([row['validation_ce_delta_myopic'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_zero_mean': float(np.nanmean([row['validation_ce_delta_zero'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_equal_weight_mean': float(np.nanmean([row['validation_ce_delta_equal_weight'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_min_variance_mean': float(np.nanmean([row['validation_ce_delta_min_variance'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_ce_delta_risk_parity_mean': float(np.nanmean([row['validation_ce_delta_risk_parity'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_sharpe_mean': float(np.nanmean([row['validation_sharpe_est'] for row in valid])) if valid else np.nan,
+            'ppgdpo_lite_train_objective_mean': np.nan,
+            'assigned_device': str(assigned_device),
+        })
+    return unit_stage2_rows, unit_stage2_block_rows
 
 
 def _normalize_rolling_oos_window_grid(grid: list[int] | tuple[int, ...] | None) -> list[int]:
@@ -1869,19 +2015,21 @@ def native_select_factor_suite(
     state_q10_floor: float = -0.05,
     cross_warn: float = 0.95,
     cross_fail: float = 0.98,
-    candidate_zoo: str = 'factor_zoo_v1',
+    candidate_zoo: str = 'factor_zoo_v2',
     max_candidates: int | None = None,
     rerank_top_n: int = 5,
     selection_split_mode: str = 'trailing_holdout',
     selection_val_months: int = 240,
     selection_device: str = 'cpu',
     stage2_max_parallel: int = 1,
+    stage2_parallel_backend: str = 'process',
     stage2_devices: str | None = None,
     ppgdpo_lite_epochs: int = 40,
     ppgdpo_lite_mc_rollouts: int = 256,
     ppgdpo_lite_mc_sub_batch: int = 256,
     selection_transaction_cost_bps: float = 0.0,
     ppgdpo_lite_covariance_mode: str = 'full',
+    selection_eval_mode: str = 'projection',
     selection_optimizer_backend: str = 'ppgdpo',
     pipinn_device: str = 'auto',
     pipinn_dtype: str = 'float64',
@@ -2002,6 +2150,7 @@ def native_select_factor_suite(
         mc_rollouts=int(ppgdpo_lite_mc_rollouts),
         mc_sub_batch=int(ppgdpo_lite_mc_sub_batch),
         covariance_mode=str(ppgdpo_lite_covariance_mode),
+        selection_eval_mode=str(selection_eval_mode),
         transaction_cost_bps=float(selection_transaction_cost_bps),
         pipinn_device=str(pipinn_device),
         pipinn_dtype=str(pipinn_dtype),
@@ -2329,125 +2478,46 @@ def native_select_factor_suite(
         max_parallel = int(max(1, stage2_max_parallel))
         max_parallel = int(min(max_parallel, len(diagnostic_units)))
 
-        def _evaluate_stage2_for_unit(unit_id: str, assigned_device: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        stage2_tasks: list[dict[str, Any]] = []
+        for unit_index, unit_id in enumerate(diagnostic_units):
+            assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
             unit_row = stage1_unit_lookup.loc[unit_id]
             spec_name = str(unit_row['spec'])
-            protocol = str(unit_row['selection_protocol_name'])
-            proto_meta = _protocol_row_payload(protocol)
-            candidate = candidate_lookup[spec_name]
-            unit_stage2_rows: list[dict[str, Any]] = []
-            unit_stage2_block_rows: list[dict[str, Any]] = []
-            for model_spec in stage2_model_specs:
-                cov_lite_cfg = _lite_cfg_for_stage2_model(lite_cfg, model_spec, mean_model_kind=str(unit_row.get('mean_model_kind') or 'factor_apt'))
-                cov_lite_cfg = replace(cov_lite_cfg, device=str(assigned_device), pipinn_device=str(assigned_device))
-                block_metrics: list[dict[str, Any]] = []
-                for block in blocks:
-                    try:
-                        metrics = _evaluate_stage2_protocol_covariance_block(
-                            selection_unit_id=unit_id,
-                            candidate=candidate,
-                            returns=returns,
-                            macro=macro,
-                            ff3=ff3,
-                            ff5=ff5,
-                            bond=bond,
-                            block={**block, 'selection_split_mode': selection_split_mode},
-                            protocol=protocol,
-                            risk_aversion=risk_aversion,
-                            lite_cfg=cov_lite_cfg,
-                            split_payload=split,
-                            config_stem=str(meta.get('config_stem', 'native')),
-                            output_root=stage2_eval_root,
-                        )
-                        metrics = {**metrics, 'assigned_device': str(assigned_device)}
-                        block_metrics.append(metrics)
-                        stage2_block_rows.append({**metrics, 'error': None})
-                        unit_stage2_block_rows.append({**metrics, 'error': None})
-                    except Exception as exc:  # noqa: BLE001
-                        train_dates = pd.DatetimeIndex(block.get('train_dates', []))
-                        val_dates = pd.DatetimeIndex(block.get('val_dates', []))
-                        unit_stage2_block_rows.append({
-                            'selection_unit_id': unit_id,
-                            'spec': spec_name,
-                            **proto_meta,
-                            'model_id': f'{unit_id}__{model_spec.label}',
-                            'stage2_model_label': model_spec.label,
-                            'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
-                            'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
-                            'mean_model_kind': cov_lite_cfg.mean_model_kind,
-                            'cross_policy_label': cov_lite_cfg.cross_policy_label,
-                            'block': str(block.get('label') or 'selection_block'),
-                            'selection_split_mode': str(selection_split_mode),
-                            'train_start_date': str(train_dates[0].date()) if len(train_dates) else None,
-                            'train_end_date': str(train_dates[-1].date()) if len(train_dates) else None,
-                            'val_start_date': str(val_dates[0].date()) if len(val_dates) else None,
-                            'val_end_date': str(val_dates[-1].date()) if len(val_dates) else None,
-                            'train_obs': int(len(train_dates)),
-                            'validation_months': np.nan,
-                            'validation_ce_est': np.nan,
-                            'validation_ce_predictive_static': np.nan,
-                            'validation_ce_myopic': np.nan,
-                            'validation_ce_zero': np.nan,
-                            'validation_ce_equal_weight': np.nan,
-                            'validation_ce_min_variance': np.nan,
-                            'validation_ce_risk_parity': np.nan,
-                            'validation_ce_delta_predictive_static': np.nan,
-                            'validation_ce_delta_myopic': np.nan,
-                            'validation_ce_delta_zero': np.nan,
-                            'validation_ce_delta_equal_weight': np.nan,
-                            'validation_ce_delta_min_variance': np.nan,
-                            'validation_ce_delta_risk_parity': np.nan,
-                            'validation_sharpe_est': np.nan,
-                            'validation_turnover_est': np.nan,
-                            'validation_max_drawdown_est': np.nan,
-                            'validation_score': np.nan,
-                            'assigned_device': str(assigned_device),
-                            'error': str(exc),
-                        })
-                valid = [row for row in block_metrics if np.isfinite(row.get('validation_score', np.nan))]
-                unit_stage2_rows.append({
-                    'selection_unit_id': unit_id,
-                    'spec': spec_name,
-                    **proto_meta,
-                    'model_id': f'{unit_id}__{model_spec.label}',
-                    'stage2_model_label': model_spec.label,
-                    'covariance_model_label': str(model_spec.base_covariance_label or model_spec.label),
-                    'covariance_model_kind': cov_lite_cfg.covariance_model_kind,
-                    'mean_model_kind': cov_lite_cfg.mean_model_kind,
-                    'cross_policy_label': cov_lite_cfg.cross_policy_label,
-                    'ppgdpo_lite_blocks_valid': int(len(valid)),
-                    'ppgdpo_lite_score_mean': float(np.nanmean([row['validation_score'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_score_q10': float(np.nanquantile(np.asarray([row['validation_score'] for row in valid], dtype=float), 0.10)) if valid else np.nan,
-                    'ppgdpo_lite_ce_mean': float(np.nanmean([row['validation_ce_est'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_predictive_static_ce_mean': float(np.nanmean([row['validation_ce_predictive_static'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_myopic_ce_mean': float(np.nanmean([row['validation_ce_myopic'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_equal_weight_ce_mean': float(np.nanmean([row['validation_ce_equal_weight'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_min_variance_ce_mean': float(np.nanmean([row['validation_ce_min_variance'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_risk_parity_ce_mean': float(np.nanmean([row['validation_ce_risk_parity'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_predictive_static_mean': float(np.nanmean([row['validation_ce_delta_predictive_static'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_myopic_mean': float(np.nanmean([row['validation_ce_delta_myopic'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_zero_mean': float(np.nanmean([row['validation_ce_delta_zero'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_equal_weight_mean': float(np.nanmean([row['validation_ce_delta_equal_weight'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_min_variance_mean': float(np.nanmean([row['validation_ce_delta_min_variance'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_ce_delta_risk_parity_mean': float(np.nanmean([row['validation_ce_delta_risk_parity'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_sharpe_mean': float(np.nanmean([row['validation_sharpe_est'] for row in valid])) if valid else np.nan,
-                    'ppgdpo_lite_train_objective_mean': np.nan,
-                    'assigned_device': str(assigned_device),
-                })
-            return unit_stage2_rows, unit_stage2_block_rows
-
+            stage2_tasks.append({
+                'unit_id': str(unit_id),
+                'spec_name': spec_name,
+                'protocol': str(unit_row['selection_protocol_name']),
+                'mean_model_kind': str(unit_row.get('mean_model_kind') or 'factor_apt'),
+                'assigned_device': str(assigned_device),
+                'candidate': candidate_lookup[spec_name],
+                'stage2_model_specs': stage2_model_specs,
+                'blocks': blocks,
+                'selection_split_mode': selection_split_mode,
+                'risk_aversion': risk_aversion,
+                'lite_cfg': lite_cfg,
+                'split': split,
+                'config_stem': str(meta.get('config_stem', 'native')),
+                'stage2_eval_root': stage2_eval_root,
+                'returns': returns,
+                'macro': macro,
+                'ff3': ff3,
+                'ff5': ff5,
+                'bond': bond,
+            })
+            
         if max_parallel <= 1:
-            for unit_index, unit_id in enumerate(diagnostic_units):
-                assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
-                unit_rows, unit_block_rows = _evaluate_stage2_for_unit(str(unit_id), assigned_device)
+            for task in stage2_tasks:
+                unit_rows, unit_block_rows = _evaluate_stage2_for_unit_worker(**task)
                 stage2_rows.extend(unit_rows)
                 stage2_block_rows.extend(unit_block_rows)
         else:
-            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+            backend = str(stage2_parallel_backend or 'process').strip().lower()
+            executor_cls: type[ThreadPoolExecutor | ProcessPoolExecutor]
+            executor_cls = ThreadPoolExecutor if backend == 'thread' else ProcessPoolExecutor
+            with executor_cls(max_workers=max_parallel) as executor:
                 futures = []
-                for unit_index, unit_id in enumerate(diagnostic_units):
-                    assigned_device = stage2_device_pool[unit_index % len(stage2_device_pool)]
-                    futures.append(executor.submit(_evaluate_stage2_for_unit, str(unit_id), assigned_device))
+                for task in stage2_tasks:
+                    futures.append(executor.submit(_evaluate_stage2_for_unit_worker, **task))
                 for fut in as_completed(futures):
                     unit_rows, unit_block_rows = fut.result()
                     stage2_rows.extend(unit_rows)
@@ -2457,7 +2527,7 @@ def native_select_factor_suite(
     if 'model_id' not in stage2_df.columns:
         stage2_df = pd.DataFrame(columns=[
             'selection_unit_id', 'spec', 'selection_protocol_name', 'train_window_mode', 'rolling_train_months',
-            'model_id', 'stage2_model_label', 'covariance_model_label', 'covariance_model_kind', 'mean_model_kind', 'cross_policy_label', 'ppgdpo_lite_blocks_valid',
+            'model_id', 'stage2_model_label', 'covariance_model_label', 'covariance_model_kind', 'mean_model_kind', 'cross_policy_label', 'selection_eval_mode', 'ppgdpo_lite_blocks_valid',
             'ppgdpo_lite_score_mean', 'ppgdpo_lite_score_q10', 'ppgdpo_lite_ce_mean', 'ppgdpo_lite_predictive_static_ce_mean', 'ppgdpo_lite_myopic_ce_mean',
             'ppgdpo_lite_equal_weight_ce_mean', 'ppgdpo_lite_min_variance_ce_mean', 'ppgdpo_lite_risk_parity_ce_mean',
             'ppgdpo_lite_ce_delta_predictive_static_mean', 'ppgdpo_lite_ce_delta_myopic_mean', 'ppgdpo_lite_ce_delta_zero_mean',
@@ -2488,6 +2558,7 @@ def native_select_factor_suite(
     if 'mean_model_kind' not in stage1_only_df.columns:
         stage1_only_df['mean_model_kind'] = 'factor_apt'
     stage1_only_df['cross_policy_label'] = np.nan
+    stage1_only_df['selection_eval_mode'] = np.nan
     stage1_only_df['ppgdpo_lite_blocks_valid'] = np.nan
     stage1_only_df['ppgdpo_lite_score_mean'] = np.nan
     stage1_only_df['ppgdpo_lite_score_q10'] = np.nan
@@ -2583,6 +2654,7 @@ def native_select_factor_suite(
                     'covariance_model_kind': fallback_kind,
                     'mean_model_kind': 'factor_apt',
                     'cross_policy_label': 'estimated',
+                    'selection_eval_mode': str(lite_cfg.selection_eval_mode),
                     'stage2_sort_score': None,
                     'ppgdpo_lite_score_mean': None,
                     'ppgdpo_lite_ce_delta_zero_mean': None,
@@ -2623,6 +2695,7 @@ def native_select_factor_suite(
                     'covariance_model_kind': None if pd.isna(row['covariance_model_kind']) else str(row['covariance_model_kind']),
                     'mean_model_kind': str(row.get('mean_model_kind') or 'factor_apt'),
                     'cross_policy_label': str(row.get('cross_policy_label') or 'estimated'),
+                    'selection_eval_mode': str(row.get('selection_eval_mode') or lite_cfg.selection_eval_mode),
                     'stage2_sort_score': float(row['stage2_sort_score']) if np.isfinite(row['stage2_sort_score']) else None,
                     'ppgdpo_lite_score_mean': float(row['ppgdpo_lite_score_mean']) if np.isfinite(row['ppgdpo_lite_score_mean']) else None,
                     'ppgdpo_lite_ce_delta_zero_mean': float(row['ppgdpo_lite_ce_delta_zero_mean']) if np.isfinite(row['ppgdpo_lite_ce_delta_zero_mean']) else None,
@@ -2661,6 +2734,7 @@ def native_select_factor_suite(
                 'covariance_model_kind': None,
                 'mean_model_kind': 'factor_apt',
                 'cross_policy_label': 'estimated',
+                'selection_eval_mode': str(lite_cfg.selection_eval_mode),
                 'stage2_sort_score': None,
                 'ppgdpo_lite_score_mean': None,
                 'ppgdpo_lite_ce_delta_zero_mean': None,
