@@ -1,0 +1,160 @@
+optimizer_backend: pipinn
+project:
+  name: ff49_stage17_rank_sweep_cv2000_curve_core_pls_fixed_pls_H24_k2_rolling240m_annual_adcc_v2_apt_pipinn_valholdout240_198001_199912_rolling240m_annual_adcc
+  output_dir: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/selection/stage2_protocol_covariance_eval/pls_H24_k2__rolling240m_annual__regime_mean/valholdout240_198001_199912/adcc/outputs
+data:
+  mode: csv
+  returns_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/selection/stage2_protocol_covariance_eval/pls_H24_k2__rolling240m_annual__regime_mean/valholdout240_198001_199912/adcc/returns_panel.csv
+  states_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/selection/stage2_protocol_covariance_eval/pls_H24_k2__rolling240m_annual__regime_mean/valholdout240_198001_199912/adcc/states_panel.csv
+  factors_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/selection/stage2_protocol_covariance_eval/pls_H24_k2__rolling240m_annual__regime_mean/valholdout240_198001_199912/adcc/factors_panel.csv
+  date_col: date
+  synthetic: null
+split:
+  train_start: '1964-01-31'
+  test_start: '1980-01-31'
+  end_date: '1999-12-31'
+  fixed_train_end: '1979-12-31'
+  refit_every: 12
+  min_train_months: 72
+  train_window_mode: rolling
+  rolling_train_months: 240
+  rebalance_every: 1
+  protocol_label: rolling240m_annual
+state:
+  source: states
+  columns:
+  - state_PLS1
+  - state_PLS2
+factor_model:
+  extractor: provided
+  n_factors: 3
+  provided_factor_columns:
+  - PLS1
+  - PLS2
+mean_model:
+  kind: factor_apt_regime
+  ridge_lambda: 1.0e-06
+  regime_threshold_quantile: 0.75
+  regime_sharpness: 8.0
+covariance_model:
+  kind: asset_adcc
+  cross_covariance_kind: auto
+  ridge_lambda: 1.0e-06
+  variance_floor: 1.0e-06
+  correlation_shrink: 0.1
+  factor_correlation_mode: independent
+  use_persistence: false
+  dcc_alpha: 0.02
+  dcc_beta: 0.97
+  adcc_gamma: 0.005
+  variance_lambda: 0.97
+  asset_covariance_shrink: 0.1
+  regime_threshold_quantile: 0.75
+  regime_smoothing: 0.9
+  regime_sharpness: 8.0
+policy:
+  risk_aversion: 5.0
+  risky_cap: 1.0
+  cash_floor: 0.0
+  long_only: true
+  pgd_steps: 100
+  step_size: 0.05
+  turnover_penalty: 0.05
+comparison:
+  cov_modes:
+  - diag
+  - full
+  cross_modes:
+  - estimated
+  - zero
+  transaction_cost_bps: 0.0
+  include_standard_benchmarks: true
+  standard_benchmarks:
+  - equal_weight
+  - min_variance
+  - risk_parity
+  reference_cross_mode_label: reference
+  benchmark_cross_mode_label: benchmark
+  market_factor_candidates:
+  - MKT
+  - Mkt-RF
+  - Mkt_RF
+  - MKT_RF
+  - MARKET
+  - market
+  - market_excess
+experiment:
+  kind: ppgdpo
+ppgdpo:
+  device: cuda:1
+  hidden_dim: 24
+  hidden_layers: 2
+  epochs: 40
+  lr: 0.001
+  utility: crra
+  batch_size: 8
+  horizon_steps: 2
+  kappa: 1.0
+  mc_rollouts: 256
+  mc_sub_batch: 256
+  clamp_min_return: -0.95
+  clamp_port_ret_max: 5.0
+  clamp_wealth_min: 1.0e-08
+  clamp_state_std_abs: 8.0
+  covariance_mode: full
+  cross_strength: 1.0
+  eps_bar: 1.0e-06
+  newton_ridge: 1.0e-10
+  newton_tau: 0.95
+  newton_armijo: 0.0001
+  newton_backtrack: 0.5
+  max_newton: 30
+  tol_grad: 1.0e-08
+  max_line_search: 20
+  interior_margin: 1.0e-08
+  clamp_neg_jxx_min: 1.0e-12
+  train_seed: 17
+  state_ridge_lambda: 1.0e-06
+pipinn:
+  device: cuda:1
+  dtype: float64
+  outer_iters: 10
+  eval_epochs: 50
+  n_train_int: 4096
+  n_train_bc: 1024
+  n_val_int: 2048
+  n_val_bc: 512
+  p_uniform: 0.5
+  p_emp: 0.5
+  p_tau_head: 0.5
+  p_tau_near0: 0.2
+  tau_head_window: 0
+  lr: 0.0005
+  grad_clip: 1.0
+  w_bc: 10.0
+  w_bc_dx: 3.0
+  scheduler_factor: 0.5
+  scheduler_patience: 3
+  min_lr: 1.0e-05
+  width: 128
+  depth: 2
+  covariance_train_mode: dcc_current
+  ansatz_mode: ansatz_log_transform
+  policy_output_mode: pure_qp
+  qp_solver_iters: 300
+  qp_solver_tol: 1.0e-10
+  qp_solver_step_scale: 1.1
+  x_domain_quantile_low: 0.001
+  x_domain_quantile_high: 0.999
+  x_domain_buffer: 0.2
+  emit_frozen_traincov_strategy: false
+  save_training_logs: true
+  show_progress: false
+  show_epoch_progress: false
+  auto_output_subdir: false
+  output_tag_fields: []
+  eval_tau_mode: maturity_declining
+  eval_tau_maturity_years: 1
+  eval_tau_reset_on_refit: true
+  warm_start: false
+  warm_start_policy: true
