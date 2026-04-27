@@ -1,0 +1,377 @@
+suite_name: ff49_stage17_rank_sweep_cv2000_curve_core_pls_fixed_native_top5
+source: v2_native_selection
+base_dir: /home/sw/PINN/empirical/src/base_bundles/ff6
+config_stem: ff49_stage17_rank_sweep_cv2000_curve_core_pls_fixed
+factor_mode: ff5_curve_core
+candidate_zoo: factor_zoo_v2
+selection_optimizer_backend: pipinn
+selection_score_mode: stage1_mean_first_spec_protocol_then_stage2_global_real_dynamic_policy
+selection_protocol: stage1_spec_protocol_screen_then_stage2_global_protocol_model_selection
+selection_protocol_candidates:
+- rolling240m_annual
+selection_protocol_semantics: warm_start_rolling_available_history
+selection_protocol_semantics_note: rolling protocols may start with the available
+  pre-history and become full-window rolling once enough history accumulates
+v55_strategy_label_map:
+  myopic: predictive_static
+  policy: pgdpo
+strategy_label_map:
+  myopic: predictive_static
+  policy: pgdpo
+comparison_benchmark_notes:
+  predictive_static: reference-only, not a primary benchmark
+  pgdpo: warmup direct policy ablation
+  ppgdpo_variants:
+  - ppgdpo
+  - ppgdpo_zero
+  - ppgdpo_regime_gated
+  external_benchmarks:
+  - equal_weight
+  - min_variance
+  - risk_parity
+stage1_top_k: 8
+stage1_top_k_requested: null
+final_top_k_requested: 5
+diagnostic_stage2_top_n: 8
+rerank_covariance_models:
+- const
+- dcc
+- adcc
+- regime_dcc
+stage2_model_variants:
+- const
+- const__zero_cross
+- dcc
+- dcc__zero_cross
+- adcc
+- adcc__zero_cross
+- regime_dcc
+- regime_dcc__zero_cross
+- regime_dcc__gated_cross
+ppgdpo_lite:
+  optimizer_backend: pipinn
+  device: cuda:1
+  stage2_max_parallel: 10
+  stage2_devices:
+  - cuda:0
+  - cuda:1
+  epochs: 40
+  covariance_mode: full
+  mc_rollouts: 256
+  mc_sub_batch: 256
+  rerank_covariance_models:
+  - const
+  - dcc
+  - adcc
+  - regime_dcc
+  stage2_model_variants:
+  - const
+  - const__zero_cross
+  - dcc
+  - dcc__zero_cross
+  - adcc
+  - adcc__zero_cross
+  - regime_dcc
+  - regime_dcc__zero_cross
+  - regime_dcc__gated_cross
+  transaction_cost_bps: 0.0
+  pipinn:
+    device: cuda:1
+    dtype: float64
+    outer_iters: 10
+    eval_epochs: 50
+    n_train_int: 4096
+    n_train_bc: 1024
+    n_val_int: 2048
+    n_val_bc: 512
+    p_uniform: 0.5
+    p_emp: 0.5
+    p_tau_head: 0.5
+    p_tau_near0: 0.2
+    tau_head_window: 0
+    lr: 0.0005
+    grad_clip: 1.0
+    w_bc: 10.0
+    w_bc_dx: 3.0
+    scheduler_factor: 0.5
+    scheduler_patience: 3
+    min_lr: 1.0e-05
+    width: 128
+    depth: 2
+    covariance_train_mode: dcc_current
+    ansatz_mode: ansatz_log_transform
+    policy_output_mode: pure_qp
+    qp_solver_iters: 300
+    qp_solver_tol: 1.0e-10
+    qp_solver_step_scale: 1.1
+    eval_tau_mode: maturity_declining
+    eval_tau_maturity_years: 1
+    eval_tau_reset_on_refit: true
+    emit_frozen_traincov_strategy: false
+    save_training_logs: true
+    show_progress: false
+    show_epoch_progress: false
+  score_mode: stage2 protocol+covariance selection with backend-aware dynamic optimizer;
+    ce_est + 1.0*gain_vs_zero, with gain_vs_myopic kept for reporting only and final
+    winners chosen by global rerank across all stage2 models from stage1 survivors
+selection_split_profile: cv2000_final20y
+selection_split:
+  mode: trailing_holdout
+  split_profile: cv2000_final20y
+  split_source: profile
+  split_description: validation 1980-1999, final OOS 2000-2019
+  split_overrides: {}
+  train_pool_start: '1964-01-01'
+  train_pool_end: '1999-12-31'
+  validation_months_requested: 240
+  blocks:
+  - label: valholdout240_198001_199912
+    train_start: '1964-01-31'
+    train_end: '1979-12-31'
+    train_months: 192
+    validation_start: '1980-01-31'
+    validation_end: '1999-12-31'
+    validation_months: 240
+  final_test_start: '2000-01-01'
+  final_test_end: '2019-12-31'
+  final_oos_retrain_uses_train_plus_validation: true
+  final_oos_train_end: '1999-12-31'
+oos_protocols_default:
+- selected_protocol
+oos_protocol_descriptions:
+  selected_protocol: use the protocol selected for this entry during native selection
+selected_oos_protocol_defaults:
+  selected_protocol:
+    name: selected_protocol
+    source_protocol: rolling240m_annual
+    train_window_mode: rolling
+    rolling_train_months: 240
+    selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+    selection_score_mean: 0.9401408450704225
+    selection_score_q10: 0.09031709760385859
+    validation_ce_mean: 0.089611232767309
+    validation_ce_delta_myopic_mean: 0.020385267843544788
+    validation_ce_delta_zero_mean: 0.000705864836549594
+    validation_ce_delta_equal_weight_mean: 0.04663579618113219
+    validation_ce_delta_min_variance_mean: 0.084571937445504
+    validation_ce_delta_risk_parity_mean: 0.051794683319431496
+    validation_sharpe_mean: 1.1360385546035598
+    validation_blocks_valid: 1
+    selection_semantics: warm_start_rolling_available_history
+validation_protocol_selection:
+  enabled: false
+  selection_target: integrated_stage1_spec_protocol_then_stage2_model
+  selection_protocol_candidates:
+  - rolling240m_annual
+  selection_semantics: warm_start_rolling_available_history
+selection_protocol_validation_summary_csv: null
+selection_protocol_validation_blocks_csv: null
+top_k: 5
+selection_summary_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/selection/spec_selection_summary.csv
+selection_stage1_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/selection/spec_selection_stage1_summary.csv
+selection_stage2_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/selection/spec_selection_stage2_summary.csv
+selection_stage1_audit_csv: null
+stage1_engine: ported_legacy_v2
+stage1_external_audit_enabled: false
+stage1_external_audit_v1_root: null
+entries:
+- rank: 1
+  model_id: pls_H1_k2__rolling240m_annual__regime_mean__dcc
+  selection_unit_id: pls_H1_k2__rolling240m_annual__regime_mean
+  spec: pls_H1_k2
+  selection_protocol_name: rolling240m_annual
+  selected_protocol_name: rolling240m_annual
+  stage1_selected_rank: 2
+  selected_model_rank: 1
+  covariance_grid_rank: 1
+  bundle_covariance_model_label: dcc
+  stage2_model_label: dcc
+  selected_mean_model_kind: factor_apt_regime
+  selected_cross_policy_label: estimated
+  selection_optimizer_backend: pipinn
+  train_window_mode: rolling
+  selected_rolling_train_months: 240
+  selected_oos_protocols:
+    selected_protocol:
+      name: selected_protocol
+      source_protocol: rolling240m_annual
+      train_window_mode: rolling
+      rolling_train_months: 240
+      selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+      selection_score_mean: 0.9401408450704225
+      selection_score_q10: 0.09031709760385859
+      validation_ce_mean: 0.089611232767309
+      validation_ce_delta_myopic_mean: 0.020385267843544788
+      validation_ce_delta_zero_mean: 0.000705864836549594
+      validation_ce_delta_equal_weight_mean: 0.04663579618113219
+      validation_ce_delta_min_variance_mean: 0.084571937445504
+      validation_ce_delta_risk_parity_mean: 0.051794683319431496
+      validation_sharpe_mean: 1.1360385546035598
+      validation_blocks_valid: 1
+      selection_semantics: warm_start_rolling_available_history
+  bundle_dir: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_001
+  config_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_001/config_empirical_pipinn_apt.yaml
+  metadata_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_001/candidate_metadata.yaml
+  returns_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_001/returns_panel.csv
+  states_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_001/states_panel.csv
+  factors_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_001/factors_panel.csv
+- rank: 2
+  model_id: pls_H2_k2__rolling240m_annual__regime_mean__dcc__zero_cross
+  selection_unit_id: pls_H2_k2__rolling240m_annual__regime_mean
+  spec: pls_H2_k2
+  selection_protocol_name: rolling240m_annual
+  selected_protocol_name: rolling240m_annual
+  stage1_selected_rank: 6
+  selected_model_rank: 2
+  covariance_grid_rank: 1
+  bundle_covariance_model_label: dcc
+  stage2_model_label: dcc__zero_cross
+  selected_mean_model_kind: factor_apt_regime
+  selected_cross_policy_label: zero
+  selection_optimizer_backend: pipinn
+  train_window_mode: rolling
+  selected_rolling_train_months: 240
+  selected_oos_protocols:
+    selected_protocol:
+      name: selected_protocol
+      source_protocol: rolling240m_annual
+      train_window_mode: rolling
+      rolling_train_months: 240
+      selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+      selection_score_mean: 0.9172535211267605
+      selection_score_q10: 0.0905689574728103
+      validation_ce_mean: 0.0905689574728103
+      validation_ce_delta_myopic_mean: 0.020076137316789602
+      validation_ce_delta_zero_mean: 0.0
+      validation_ce_delta_equal_weight_mean: 0.047593520886633496
+      validation_ce_delta_min_variance_mean: 0.0855296621510053
+      validation_ce_delta_risk_parity_mean: 0.0527524080249328
+      validation_sharpe_mean: 1.1288943900748885
+      validation_blocks_valid: 1
+      selection_semantics: warm_start_rolling_available_history
+  bundle_dir: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_002
+  config_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_002/config_empirical_pipinn_apt.yaml
+  metadata_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_002/candidate_metadata.yaml
+  returns_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_002/returns_panel.csv
+  states_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_002/states_panel.csv
+  factors_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_002/factors_panel.csv
+- rank: 3
+  model_id: pls_H2_k2__rolling240m_annual__regime_mean__adcc__zero_cross
+  selection_unit_id: pls_H2_k2__rolling240m_annual__regime_mean
+  spec: pls_H2_k2
+  selection_protocol_name: rolling240m_annual
+  selected_protocol_name: rolling240m_annual
+  stage1_selected_rank: 6
+  selected_model_rank: 3
+  covariance_grid_rank: 1
+  bundle_covariance_model_label: adcc
+  stage2_model_label: adcc__zero_cross
+  selected_mean_model_kind: factor_apt_regime
+  selected_cross_policy_label: zero
+  selection_optimizer_backend: pipinn
+  train_window_mode: rolling
+  selected_rolling_train_months: 240
+  selected_oos_protocols:
+    selected_protocol:
+      name: selected_protocol
+      source_protocol: rolling240m_annual
+      train_window_mode: rolling
+      rolling_train_months: 240
+      selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+      selection_score_mean: 0.9066901408450705
+      selection_score_q10: 0.0905183179037933
+      validation_ce_mean: 0.0905183179037933
+      validation_ce_delta_myopic_mean: 0.020042176513834803
+      validation_ce_delta_zero_mean: 0.0
+      validation_ce_delta_equal_weight_mean: 0.047542881317616505
+      validation_ce_delta_min_variance_mean: 0.0854790225819883
+      validation_ce_delta_risk_parity_mean: 0.05270176845591581
+      validation_sharpe_mean: 1.1282589822476834
+      validation_blocks_valid: 1
+      selection_semantics: warm_start_rolling_available_history
+  bundle_dir: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_003
+  config_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_003/config_empirical_pipinn_apt.yaml
+  metadata_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_003/candidate_metadata.yaml
+  returns_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_003/returns_panel.csv
+  states_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_003/states_panel.csv
+  factors_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_003/factors_panel.csv
+- rank: 4
+  model_id: pls_H1_k2__rolling240m_annual__regime_mean__regime_dcc__gated_cross
+  selection_unit_id: pls_H1_k2__rolling240m_annual__regime_mean
+  spec: pls_H1_k2
+  selection_protocol_name: rolling240m_annual
+  selected_protocol_name: rolling240m_annual
+  stage1_selected_rank: 2
+  selected_model_rank: 4
+  covariance_grid_rank: 1
+  bundle_covariance_model_label: regime_dcc
+  stage2_model_label: regime_dcc__gated_cross
+  selected_mean_model_kind: factor_apt_regime
+  selected_cross_policy_label: regime_gated
+  selection_optimizer_backend: pipinn
+  train_window_mode: rolling
+  selected_rolling_train_months: 240
+  selected_oos_protocols:
+    selected_protocol:
+      name: selected_protocol
+      source_protocol: rolling240m_annual
+      train_window_mode: rolling
+      rolling_train_months: 240
+      selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+      selection_score_mean: 0.9049295774647887
+      selection_score_q10: 0.0901656098190743
+      validation_ce_mean: 0.0890027493839866
+      validation_ce_delta_myopic_mean: 0.027318939692578897
+      validation_ce_delta_zero_mean: 0.0011628604350877036
+      validation_ce_delta_equal_weight_mean: 0.0460273127978098
+      validation_ce_delta_min_variance_mean: 0.0839634540621816
+      validation_ce_delta_risk_parity_mean: 0.0511861999361091
+      validation_sharpe_mean: 1.1272983701283703
+      validation_blocks_valid: 1
+      selection_semantics: warm_start_rolling_available_history
+  bundle_dir: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_004
+  config_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_004/config_empirical_pipinn_apt.yaml
+  metadata_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_004/candidate_metadata.yaml
+  returns_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_004/returns_panel.csv
+  states_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_004/states_panel.csv
+  factors_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_004/factors_panel.csv
+- rank: 5
+  model_id: pls_H2_k2__rolling240m_annual__baseline_mean__dcc__zero_cross
+  selection_unit_id: pls_H2_k2__rolling240m_annual__baseline_mean
+  spec: pls_H2_k2
+  selection_protocol_name: rolling240m_annual
+  selected_protocol_name: rolling240m_annual
+  stage1_selected_rank: 5
+  selected_model_rank: 5
+  covariance_grid_rank: 1
+  bundle_covariance_model_label: dcc
+  stage2_model_label: dcc__zero_cross
+  selected_mean_model_kind: factor_apt
+  selected_cross_policy_label: zero
+  selection_optimizer_backend: pipinn
+  train_window_mode: rolling
+  selected_rolling_train_months: 240
+  selected_oos_protocols:
+    selected_protocol:
+      name: selected_protocol
+      source_protocol: rolling240m_annual
+      train_window_mode: rolling
+      rolling_train_months: 240
+      selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+      selection_score_mean: 0.8961267605633803
+      selection_score_q10: 0.0904142305247095
+      validation_ce_mean: 0.0904142305247095
+      validation_ce_delta_myopic_mean: 0.0185263290089116
+      validation_ce_delta_zero_mean: 0.0
+      validation_ce_delta_equal_weight_mean: 0.047438793938532696
+      validation_ce_delta_min_variance_mean: 0.0853749352029045
+      validation_ce_delta_risk_parity_mean: 0.052597681076832
+      validation_sharpe_mean: 1.1219688892635464
+      validation_blocks_valid: 1
+      selection_semantics: warm_start_rolling_available_history
+  bundle_dir: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_005
+  config_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_005/config_empirical_pipinn_apt.yaml
+  metadata_yaml: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_005/candidate_metadata.yaml
+  returns_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_005/returns_panel.csv
+  states_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_005/states_panel.csv
+  factors_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_005/factors_panel.csv

@@ -1,0 +1,51 @@
+stage1_selected_rank: 2
+covariance_grid_rank: 1
+selected_model_rank: 4
+selection_unit_id: pls_H1_k2__rolling240m_annual__regime_mean
+spec: pls_H1_k2
+selection_protocol_name: rolling240m_annual
+selected_protocol_name: rolling240m_annual
+train_window_mode: rolling
+selected_rolling_train_months: 240
+selected_oos_protocols:
+  selected_protocol:
+    name: selected_protocol
+    source_protocol: rolling240m_annual
+    train_window_mode: rolling
+    rolling_train_months: 240
+    selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+    selection_score_mean: 0.9049295774647887
+    selection_score_q10: 0.0901656098190743
+    validation_ce_mean: 0.0890027493839866
+    validation_ce_delta_myopic_mean: 0.027318939692578897
+    validation_ce_delta_zero_mean: 0.0011628604350877036
+    validation_ce_delta_equal_weight_mean: 0.0460273127978098
+    validation_ce_delta_min_variance_mean: 0.0839634540621816
+    validation_ce_delta_risk_parity_mean: 0.0511861999361091
+    validation_sharpe_mean: 1.1272983701283703
+    validation_blocks_valid: 1
+    selection_semantics: warm_start_rolling_available_history
+bundle_covariance_model_label: regime_dcc
+stage2_model_label: regime_dcc__gated_cross
+selected_mean_model_kind: factor_apt_regime
+selected_cross_policy_label: regime_gated
+selection_optimizer_backend: pipinn
+stage2_sort_score: 0.9049295774647887
+ppgdpo_lite_score_mean: 0.0901656098190743
+ppgdpo_lite_ce_delta_zero_mean: 0.0011628604350877036
+ppgdpo_lite_ce_delta_predictive_static_mean: null
+ppgdpo_lite_ce_delta_myopic_mean: 0.027318939692578897
+ppgdpo_lite_ce_delta_equal_weight_mean: 0.0460273127978098
+ppgdpo_lite_ce_delta_min_variance_mean: 0.0839634540621816
+ppgdpo_lite_ce_delta_risk_parity_mean: 0.0511861999361091
+candidate:
+  kind: pls
+  horizon: 1
+  n_components: 2
+  feature_blocks:
+  - returns
+  provided_source: null
+  residual_base: null
+  residual_k: null
+  pls_recipe: v1_compatible_future_avg_targets
+  pls_smooth_span: 6
