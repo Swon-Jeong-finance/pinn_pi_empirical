@@ -1,0 +1,30 @@
+version: v56
+optimizer_backend: pipinn
+strategy_label_map:
+  myopic: predictive_static
+  policy: pgdpo
+  pipinn: ppgdpo
+  pipinn_zero: ppgdpo_zero
+  pipinn_regime_gated: ppgdpo_regime_gated
+  pipinn_traincov_diag: pgdpo
+comparison_roles:
+  predictive_static: reference_only
+  pgdpo: method_ablation
+  ppgdpo: method_candidate
+  equal_weight: external_benchmark
+  min_variance: external_benchmark
+  risk_parity: external_benchmark
+reference_cross_mode_label: reference
+benchmark_cross_mode_label: benchmark
+include_standard_benchmarks: true
+standard_benchmarks:
+- equal_weight
+- min_variance
+- risk_parity
+notes:
+- predictive_static is reference-only and should not be treated as a primary benchmark
+- pgdpo denotes the warmup direct policy output before Pontryagin projection
+- ppgdpo / ppgdpo_zero / ppgdpo_regime_gated remain the main mechanism-comparison
+  strategies
+pipinn_ansatz_mode: ansatz_log_transform
+pipinn_policy_output_mode: pure_qp
