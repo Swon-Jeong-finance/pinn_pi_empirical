@@ -1,0 +1,13 @@
+rank: 2
+spec: pls_H2_k2
+oos_protocol_requested: selected_protocol
+oos_protocol: rolling240m_annual
+output_dir: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_002/outputs/ff49_stage17_rank_sweep_cv2000_curve_core_pls_fixed_pls_H2_k2_rolling240m_annual_dcc__zero_cross_v2_apt_pipinn_rolling240m_annual
+device: cuda:1
+optimizer_backend: pipinn
+mc_rollouts: 256
+mc_sub_batch: 256
+train_window_mode: rolling
+refit_every: 12
+rebalance_every: 1
+rolling_train_months: 240

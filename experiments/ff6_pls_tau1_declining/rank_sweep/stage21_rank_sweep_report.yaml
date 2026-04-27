@@ -1,0 +1,25 @@
+suite_name: ff49_stage17_rank_sweep_cv2000_curve_core_pls_fixed_native_top5
+entries:
+- rank: 1
+  spec: pls_H1_k2
+- rank: 2
+  spec: pls_H2_k2
+- rank: 3
+  spec: pls_H2_k2
+- rank: 4
+  spec: pls_H1_k2
+- rank: 5
+  spec: pls_H2_k2
+oos_protocols_requested:
+- selected_protocol
+oos_protocols:
+- rolling240m_annual
+zero_cost_summary: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_sweep/rank_sweep_cross_modes_zero_cost_summary.csv
+all_costs_summary: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_sweep/rank_sweep_cross_modes_all_costs_summary.csv
+results_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_sweep/rank_sweep_results.csv
+emit_legacy_fixed_layout: false
+protocol_outputs:
+  rolling240m_annual:
+    zero_cost_summary: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_sweep/rank_sweep_rolling240m_annual_cross_modes_zero_cost_summary.csv
+    all_costs_summary: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_sweep/rank_sweep_rolling240m_annual_cross_modes_all_costs_summary.csv
+    results_csv: /home/sw/PINN/empirical/src/experiments/ff6_pls_tau1_declining/rank_sweep/rank_sweep_rolling240m_annual_results.csv
