@@ -1,0 +1,51 @@
+stage1_selected_rank: 2
+covariance_grid_rank: 1
+selected_model_rank: 1
+selection_unit_id: pls_H1_k2__rolling240m_annual__regime_mean
+spec: pls_H1_k2
+selection_protocol_name: rolling240m_annual
+selected_protocol_name: rolling240m_annual
+train_window_mode: rolling
+selected_rolling_train_months: 240
+selected_oos_protocols:
+  selected_protocol:
+    name: selected_protocol
+    source_protocol: rolling240m_annual
+    train_window_mode: rolling
+    rolling_train_months: 240
+    selection_source: stage1_spec_protocol_screen_then_stage2_global_model_selection
+    selection_score_mean: 0.9401408450704225
+    selection_score_q10: 0.09031709760385859
+    validation_ce_mean: 0.089611232767309
+    validation_ce_delta_myopic_mean: 0.020385267843544788
+    validation_ce_delta_zero_mean: 0.000705864836549594
+    validation_ce_delta_equal_weight_mean: 0.04663579618113219
+    validation_ce_delta_min_variance_mean: 0.084571937445504
+    validation_ce_delta_risk_parity_mean: 0.051794683319431496
+    validation_sharpe_mean: 1.1360385546035598
+    validation_blocks_valid: 1
+    selection_semantics: warm_start_rolling_available_history
+bundle_covariance_model_label: dcc
+stage2_model_label: dcc
+selected_mean_model_kind: factor_apt_regime
+selected_cross_policy_label: estimated
+selection_optimizer_backend: pipinn
+stage2_sort_score: 0.9401408450704225
+ppgdpo_lite_score_mean: 0.09031709760385859
+ppgdpo_lite_ce_delta_zero_mean: 0.000705864836549594
+ppgdpo_lite_ce_delta_predictive_static_mean: null
+ppgdpo_lite_ce_delta_myopic_mean: 0.020385267843544788
+ppgdpo_lite_ce_delta_equal_weight_mean: 0.04663579618113219
+ppgdpo_lite_ce_delta_min_variance_mean: 0.084571937445504
+ppgdpo_lite_ce_delta_risk_parity_mean: 0.051794683319431496
+candidate:
+  kind: pls
+  horizon: 1
+  n_components: 2
+  feature_blocks:
+  - returns
+  provided_source: null
+  residual_base: null
+  residual_k: null
+  pls_recipe: v1_compatible_future_avg_targets
+  pls_smooth_span: 6
