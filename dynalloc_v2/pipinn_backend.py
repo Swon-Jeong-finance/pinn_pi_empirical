@@ -290,6 +290,9 @@ class PIPINNEnvFromPPGDPO:
         self.drift_matrix = self.transition_matrix - np.eye(self.n_states, dtype=float)
         self.ansatz_mode = str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')).lower()
         self.policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')).lower()
+        self.qp_solver_iters = int(getattr(cfg.pipinn, 'qp_solver_iters', 300) or 300)
+        self.qp_solver_tol = float(getattr(cfg.pipinn, 'qp_solver_tol', 1.0e-10) or 1.0e-10)
+        self.qp_solver_step_scale = float(getattr(cfg.pipinn, 'qp_solver_step_scale', 1.1) or 1.1)
         self.state_whiten_enabled = self.ansatz_mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}
         self.Q_raw = _symmetrize_psd(np.asarray(cross_est.state_innov_cov, dtype=float), floor=1.0e-10)
         cross_df = cross_est.cross.reindex(index=self.asset_columns, columns=self.state_columns)
@@ -481,9 +484,9 @@ class TrainedPIPINN:
                 v_t,
                 gamma=float(self.env.gamma),
                 cap=float(self.env.risky_cap),
-                iters=300,
-                tol=1.0e-10,
-                step_scale=1.1,
+                iters=int(self.env.qp_solver_iters),
+                tol=float(self.env.qp_solver_tol),
+                step_scale=float(self.env.qp_solver_step_scale),
             )
             w = np.asarray(w_t.squeeze(0).detach().cpu().numpy(), dtype=float)
             return w, {
@@ -649,9 +652,9 @@ def _precompute_policy_coeffs(
         v_fb,
         gamma=env.gamma,
         cap=env.risky_cap,
-        iters=300,
-        tol=1.0e-10,
-        step_scale=1.1,
+        iters=int(env.qp_solver_iters),
+        tol=float(env.qp_solver_tol),
+        step_scale=float(env.qp_solver_step_scale),
     )
     
     pi_sigma_pi = torch.sum(pi * torch.matmul(pi, env.Sigma_train_t.T), dim=1, keepdim=True)

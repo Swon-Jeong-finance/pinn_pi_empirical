@@ -91,6 +91,8 @@ def cmd_run_rank_sweep(args):
         mc_sub_batch_override=args.ppgdpo_mc_sub_batch,
         oos_protocols=args.oos_protocols,
         emit_legacy_fixed_layout=bool(args.emit_legacy_fixed_layout),
+        max_parallel=args.max_parallel,
+        parallel_backend=args.parallel_backend,
     )
     print(f'output_dir: {artifacts.out_dir}')
     print(f'progress_csv: {artifacts.progress_csv}')
@@ -181,6 +183,9 @@ def cmd_select_native_suite(args):
         pipinn_covariance_train_mode=args.pipinn_covariance_train_mode,
         pipinn_ansatz_mode=args.pipinn_ansatz_mode,
         pipinn_policy_output_mode=args.pipinn_policy_output_mode,
+        pipinn_qp_solver_iters=args.pipinn_qp_solver_iters,
+        pipinn_qp_solver_tol=args.pipinn_qp_solver_tol,
+        pipinn_qp_solver_step_scale=args.pipinn_qp_solver_step_scale,
         pipinn_eval_tau_mode=args.pipinn_eval_tau_mode,
         pipinn_eval_tau_maturity_years=args.pipinn_eval_tau_maturity_years,
         pipinn_eval_tau_reset_on_refit=bool(args.pipinn_eval_tau_reset_on_refit),
@@ -286,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--ppgdpo-lite-mc-sub-batch', type=int, default=256)
     p_native.add_argument('--selection-transaction-cost-bps', type=float, default=0.0)
     p_native.add_argument('--ppgdpo-lite-covariance-mode', choices=['full', 'diag'], default='full')
-    p_native.add_argument('--selection-eval-mode', choices=['projection', 'pure_qp'], default='projection')
+    p_native.add_argument('--selection-eval-mode', choices=['projection', 'pure_qp'], default='pure_qp')
     p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn'], default='pipinn')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
@@ -311,8 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-width', type=int, default=128)
     p_native.add_argument('--pipinn-depth', type=int, default=2)
     p_native.add_argument('--pipinn-covariance-train-mode', choices=['dcc_current', 'cross_resid'], default='dcc_current')
-    p_native.add_argument('--pipinn-ansatz-mode',choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'], default='ansatz_normalization_log_transform')
+    p_native.add_argument('--pipinn-ansatz-mode',choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'], default='ansatz_log_transform')
     p_native.add_argument('--pipinn-policy-output-mode', choices=['projection', 'pure_qp'], default='pure_qp')
+    p_native.add_argument('--pipinn-qp-solver-iters', type=int, default=300)
+    p_native.add_argument('--pipinn-qp-solver-tol', type=float, default=1.0e-10)
+    p_native.add_argument('--pipinn-qp-solver-step-scale', type=float, default=1.1)
     p_native.add_argument('--pipinn-eval-tau-mode', choices=['test_remaining', 'maturity_declining', 'maturity_constant'], default='maturity_constant')
     p_native.add_argument('--pipinn-eval-tau-maturity-years', type=int, default=1)
     p_native.add_argument('--pipinn-eval-tau-reset-on-refit', action='store_true')
@@ -330,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_rank = sub.add_parser('run-rank-sweep')
     p_rank.add_argument('--manifest', required=True)
-    p_rank.add_argument('--device', default=None)
+    p_rank.add_argument('--device', default=None, help='Device override. Accepts single value (cuda:0) or pool (cuda:0,cuda:1).')
     p_rank.add_argument('--ppgdpo-mc-rollouts', type=int, default=None)
     p_rank.add_argument('--ppgdpo-mc-sub-batch', type=int, default=None)
     p_rank.add_argument(
@@ -340,6 +348,8 @@ def build_parser() -> argparse.ArgumentParser:
         help='Requested OOS protocols. Supports fixed, expanding_annual, rolling20y_annual, rolling_selected_annual, selected_protocol, and rolling{N}m_annual.',
     )
     p_rank.add_argument('--emit-legacy-fixed-layout', action='store_true')
+    p_rank.add_argument('--max-parallel', type=int, default=1, help='Run rank/protocol jobs concurrently when >1.')
+    p_rank.add_argument('--parallel-backend', choices=['process', 'thread'], default='process')
     p_rank.set_defaults(func=cmd_run_rank_sweep)
 
     register_legacy_parsers(sub)

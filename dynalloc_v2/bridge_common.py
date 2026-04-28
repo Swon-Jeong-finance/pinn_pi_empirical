@@ -144,6 +144,7 @@ def _build_v2_config_dict(
     ppgdpo_mc_sub_batch: int = 256,
     mean_model_kind: str = 'factor_apt',
     comparison_cross_modes: list[str] | None = None,
+    comparison_transaction_cost_bps: float = 0.0,
     optimizer_backend: str = 'ppgdpo',
     pipinn_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -241,7 +242,7 @@ def _build_v2_config_dict(
         },
         'comparison': {
             'cross_modes': list(comparison_cross_modes or ['estimated', 'zero', 'regime_gated']),
-            'transaction_cost_bps': 0.0,
+            'transaction_cost_bps': float(comparison_transaction_cost_bps),
         },
     }
     if backend == 'pipinn' or pipinn_payload is not None:

@@ -171,6 +171,9 @@ class PIPINNConfig(BaseModel):
     covariance_train_mode: Literal['dcc_current', 'cross_resid'] = 'dcc_current'
     ansatz_mode: Literal['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'] = 'ansatz_normalization_log_transform'
     policy_output_mode: Literal['projection', 'pure_qp'] = 'pure_qp'
+    qp_solver_iters: int = 300
+    qp_solver_tol: float = 1.0e-10
+    qp_solver_step_scale: float = 1.1
     x_domain_quantile_low: float = 0.001
     x_domain_quantile_high: float = 0.999
     x_domain_buffer: float = 0.20

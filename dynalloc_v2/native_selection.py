@@ -143,7 +143,10 @@ class SelectionLitePPGDPOConfig:
     pipinn_depth: int = 4
     pipinn_covariance_train_mode: str = 'dcc_current'
     pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform'
-    pipinn_policy_output_mode: str = 'projection'
+    pipinn_policy_output_mode: str = 'pure_qp'
+    pipinn_qp_solver_iters: int = 300
+    pipinn_qp_solver_tol: float = 1.0e-10
+    pipinn_qp_solver_step_scale: float = 1.1
     pipinn_eval_tau_mode: str = 'maturity_constant'
     pipinn_eval_tau_maturity_years: int = 1
     pipinn_eval_tau_reset_on_refit: bool = False
@@ -1032,6 +1035,9 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             covariance_train_mode=str(lite_cfg.pipinn_covariance_train_mode),
             ansatz_mode=str(lite_cfg.pipinn_ansatz_mode),
             policy_output_mode=str(lite_cfg.pipinn_policy_output_mode),
+            qp_solver_iters=int(lite_cfg.pipinn_qp_solver_iters),
+            qp_solver_tol=float(lite_cfg.pipinn_qp_solver_tol),
+            qp_solver_step_scale=float(lite_cfg.pipinn_qp_solver_step_scale),
             eval_tau_mode=str(lite_cfg.pipinn_eval_tau_mode),
             eval_tau_maturity_years=int(lite_cfg.pipinn_eval_tau_maturity_years),
             eval_tau_reset_on_refit=bool(lite_cfg.pipinn_eval_tau_reset_on_refit),
@@ -1070,6 +1076,9 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'covariance_train_mode': str(lite_cfg.pipinn_covariance_train_mode),
         'ansatz_mode': str(lite_cfg.pipinn_ansatz_mode),
         'policy_output_mode': str(lite_cfg.pipinn_policy_output_mode),
+        'qp_solver_iters': int(lite_cfg.pipinn_qp_solver_iters),
+        'qp_solver_tol': float(lite_cfg.pipinn_qp_solver_tol),
+        'qp_solver_step_scale': float(lite_cfg.pipinn_qp_solver_step_scale),
         'eval_tau_mode': str(lite_cfg.pipinn_eval_tau_mode),
         'eval_tau_maturity_years': int(lite_cfg.pipinn_eval_tau_maturity_years),
         'eval_tau_reset_on_refit': bool(lite_cfg.pipinn_eval_tau_reset_on_refit),
@@ -1347,6 +1356,7 @@ def _evaluate_stage2_protocol_covariance_block(
         ppgdpo_mc_sub_batch=int(lite_cfg.mc_sub_batch),
         mean_model_kind=str(lite_cfg.mean_model_kind),
         comparison_cross_modes=_comparison_cross_modes_for_covariance_label(base_cov_label),
+        comparison_transaction_cost_bps=float(lite_cfg.transaction_cost_bps),
         optimizer_backend=str(lite_cfg.optimizer_backend),
         pipinn_payload=_pipinn_payload_from_lite_cfg(lite_cfg),
     )
@@ -1602,6 +1612,9 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
         out.pipinn.ansatz_mode = str(lite_cfg.pipinn_ansatz_mode)
         out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
+        out.pipinn.qp_solver_iters = int(lite_cfg.pipinn_qp_solver_iters)
+        out.pipinn.qp_solver_tol = float(lite_cfg.pipinn_qp_solver_tol)
+        out.pipinn.qp_solver_step_scale = float(lite_cfg.pipinn_qp_solver_step_scale)
         out.pipinn.eval_tau_mode = str(lite_cfg.pipinn_eval_tau_mode)
         out.pipinn.eval_tau_maturity_years = int(lite_cfg.pipinn_eval_tau_maturity_years)
         out.pipinn.eval_tau_reset_on_refit = bool(lite_cfg.pipinn_eval_tau_reset_on_refit)
@@ -2056,6 +2069,9 @@ def native_select_factor_suite(
     pipinn_covariance_train_mode: str = 'dcc_current',
     pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform',
     pipinn_policy_output_mode: str = 'pure_qp',
+    pipinn_qp_solver_iters: int = 300,
+    pipinn_qp_solver_tol: float = 1.0e-10,
+    pipinn_qp_solver_step_scale: float = 1.1,
     pipinn_eval_tau_mode: str = 'maturity_constant',
     pipinn_eval_tau_maturity_years: int = 1,
     pipinn_eval_tau_reset_on_refit: bool = False,
@@ -2177,6 +2193,9 @@ def native_select_factor_suite(
         pipinn_covariance_train_mode=str(pipinn_covariance_train_mode),
         pipinn_ansatz_mode=str(pipinn_ansatz_mode),
         pipinn_policy_output_mode=str(pipinn_policy_output_mode),
+        pipinn_qp_solver_iters=int(pipinn_qp_solver_iters),
+        pipinn_qp_solver_tol=float(pipinn_qp_solver_tol),
+        pipinn_qp_solver_step_scale=float(pipinn_qp_solver_step_scale),
         pipinn_eval_tau_mode=str(pipinn_eval_tau_mode),
         pipinn_eval_tau_maturity_years=int(pipinn_eval_tau_maturity_years),
         pipinn_eval_tau_reset_on_refit=bool(pipinn_eval_tau_reset_on_refit),
@@ -2836,6 +2855,7 @@ def native_select_factor_suite(
                 ppgdpo_covariance_mode=str(lite_cfg.covariance_mode),
                 mean_model_kind=selected_mean_model_kind,
                 comparison_cross_modes=_comparison_cross_modes_for_covariance_label(bundle_cov_label),
+                comparison_transaction_cost_bps=float(lite_cfg.transaction_cost_bps),
                 optimizer_backend=str(lite_cfg.optimizer_backend),
                 pipinn_payload=_pipinn_payload_from_lite_cfg(lite_cfg),
             )
@@ -2855,7 +2875,7 @@ def native_select_factor_suite(
                 covariance_regime_threshold_quantile=float(cov_payload.get('regime_threshold_quantile', 0.75)),
                 covariance_regime_smoothing=float(cov_payload.get('regime_smoothing', 0.90)),
                 covariance_regime_sharpness=float(cov_payload.get('regime_sharpness', 8.0)),
-                ppgdpo_covariance_mode=str(lite_cfg.covariance_mode),
+                comparison_transaction_cost_bps=float(lite_cfg.transaction_cost_bps),
                 mean_model_kind=selected_mean_model_kind,
                 comparison_cross_modes=_comparison_cross_modes_for_covariance_label(bundle_cov_label),
                 optimizer_backend=str(lite_cfg.optimizer_backend),
