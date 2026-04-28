@@ -89,6 +89,7 @@ def cmd_run_rank_sweep(args):
         device_override=args.device,
         mc_rollouts_override=args.ppgdpo_mc_rollouts,
         mc_sub_batch_override=args.ppgdpo_mc_sub_batch,
+        transaction_cost_bps_override=args.transaction_cost_bps,
         oos_protocols=args.oos_protocols,
         emit_legacy_fixed_layout=bool(args.emit_legacy_fixed_layout),
         max_parallel=args.max_parallel,
@@ -341,12 +342,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rank.add_argument('--device', default=None, help='Device override. Accepts single value (cuda:0) or pool (cuda:0,cuda:1).')
     p_rank.add_argument('--ppgdpo-mc-rollouts', type=int, default=None)
     p_rank.add_argument('--ppgdpo-mc-sub-batch', type=int, default=None)
-    p_rank.add_argument(
-        '--oos-protocols',
-        nargs='+',
-        default=None,
-        help='Requested OOS protocols. Supports fixed, expanding_annual, rolling20y_annual, rolling_selected_annual, selected_protocol, and rolling{N}m_annual.',
-    )
+    p_rank.add_argument('--transaction-cost-bps', type=float, default=None,help='Override comparison.transaction_cost_bps (in bps) for every rank/protocol in the sweep. If omitted, per-rank YAML value is used.',)
+    p_rank.add_argument('--oos-protocols', nargs='+', default=None, help='Requested OOS protocols. Supports fixed, expanding_annual, rolling20y_annual, rolling_selected_annual, selected_protocol, and rolling{N}m_annual.',)
     p_rank.add_argument('--emit-legacy-fixed-layout', action='store_true')
     p_rank.add_argument('--max-parallel', type=int, default=1, help='Run rank/protocol jobs concurrently when >1.')
     p_rank.add_argument('--parallel-backend', choices=['process', 'thread'], default='process')

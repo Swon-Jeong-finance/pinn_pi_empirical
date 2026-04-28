@@ -31,8 +31,6 @@ def _safe_copy(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
 
-
-
 def _protocol_output_dir(base_output_dir: Path, protocol: str) -> Path:
     return base_output_dir.parent / f'{base_output_dir.name}_{protocol}'
 
@@ -44,8 +42,6 @@ def _parse_device_pool(value: str | None) -> list[str]:
         return []
     return [token for token in raw.split() if token]
 
-
-
 def _run_single_rank_protocol(
     *,
     entry: dict[str, Any],
@@ -55,6 +51,7 @@ def _run_single_rank_protocol(
     device_override: str | None,
     mc_rollouts_override: int | None,
     mc_sub_batch_override: int | None,
+    transaction_cost_bps_override: float | None,
     emit_legacy_fixed_layout: bool,
 ) -> dict[str, Any]:
     rank = int(entry['rank'])
@@ -78,6 +75,8 @@ def _run_single_rank_protocol(
         cfg.ppgdpo.mc_rollouts = int(mc_rollouts_override)
     if mc_sub_batch_override is not None:
         cfg.ppgdpo.mc_sub_batch = int(mc_sub_batch_override)
+    if transaction_cost_bps_override is not None:
+        cfg.comparison.transaction_cost_bps = float(transaction_cost_bps_override)
 
     artifacts = run_experiment(cfg)
 
@@ -106,6 +105,7 @@ def _run_single_rank_protocol(
         'refit_every': int(cfg.split.refit_every),
         'rebalance_every': int(cfg.split.rebalance_every),
         'rolling_train_months': int(cfg.split.rolling_train_months) if cfg.split.rolling_train_months is not None else None,
+        'transaction_cost_bps': float(cfg.comparison.transaction_cost_bps),
     }
     (protocol_dir / '_done.yaml').write_text(yaml.safe_dump(done_payload, sort_keys=False), encoding='utf-8')
     (protocol_dir / 'stage21_rank_report.yaml').write_text(yaml.safe_dump(done_payload, sort_keys=False), encoding='utf-8')
@@ -135,15 +135,15 @@ def _run_single_rank_protocol(
         'rolling_train_months': int(cfg.split.rolling_train_months) if cfg.split.rolling_train_months is not None else None,
         'mc_rollouts': int(cfg.ppgdpo.mc_rollouts),
         'mc_sub_batch': int(cfg.ppgdpo.mc_sub_batch),
+        'transaction_cost_bps': float(cfg.comparison.transaction_cost_bps),
     }
-
-
 
 def run_rank_sweep(
     manifest_path: str | Path,
     device_override: str | None = None,
     mc_rollouts_override: int | None = None,
     mc_sub_batch_override: int | None = None,
+    transaction_cost_bps_override: float | None = None,
     oos_protocols: list[str] | tuple[str, ...] | None = None,
     emit_legacy_fixed_layout: bool = False,
     max_parallel: int = 1,
@@ -185,6 +185,7 @@ def run_rank_sweep(
                 'device_override': assigned_device,
                 'mc_rollouts_override': mc_rollouts_override,
                 'mc_sub_batch_override': mc_sub_batch_override,
+                'transaction_cost_bps_override': transaction_cost_bps_override,
                 'emit_legacy_fixed_layout': emit_legacy_fixed_layout,
             })
 
@@ -240,6 +241,7 @@ def run_rank_sweep(
             'rolling_train_months': int(result['rolling_train_months']) if result['rolling_train_months'] is not None else None,
             'mc_rollouts': int(result['mc_rollouts']),
             'mc_sub_batch': int(result['mc_sub_batch']),
+            'transaction_cost_bps': float(result['transaction_cost_bps']),
         })
 
     zero_all = pd.concat(zero_rows, ignore_index=True)
