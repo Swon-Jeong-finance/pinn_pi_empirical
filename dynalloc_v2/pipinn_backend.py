@@ -294,9 +294,14 @@ class PIPINNEnvFromPPGDPO:
         self.qp_solver_tol = float(getattr(cfg.pipinn, 'qp_solver_tol', 1.0e-10) or 1.0e-10)
         self.qp_solver_step_scale = float(getattr(cfg.pipinn, 'qp_solver_step_scale', 1.1) or 1.1)
         self.state_whiten_enabled = self.ansatz_mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}
-        self.Q_raw = _symmetrize_psd(np.asarray(cross_est.state_innov_cov, dtype=float), floor=1.0e-10)
-        cross_df = cross_est.cross.reindex(index=self.asset_columns, columns=self.state_columns)
-        self.C_train_raw = cross_df.to_numpy(dtype=float)
+        ret_source_order = list(cross_est.cross.index)
+        state_source_order = list(cross_est.cross.columns)
+        asset_perm = [ret_source_order.index(asset) for asset in self.asset_columns]
+        state_perm = [state_source_order.index(state) for state in self.state_columns]
+        q_current = np.asarray(cross_est.current_state_innov_cov(), dtype=float)
+        c_current = np.asarray(cross_est.current_cross(), dtype=float)
+        self.Q_raw = _symmetrize_psd(np.asarray(q_current[np.ix_(state_perm, state_perm)], dtype=float), floor=1.0e-10)
+        self.C_train_raw = np.asarray(c_current[np.ix_(asset_perm, state_perm)], dtype=float)
         self.Sigma_train = _symmetrize_psd(np.asarray(sigma_train, dtype=float), floor=1.0e-10)
 
         if self.state_whiten_enabled:
@@ -726,6 +731,7 @@ def _policy_evaluation(
     grad_clip: float,
     show_progress: bool = False,
     progress_desc: str | None = None,
+    training_mode: str = 'pipinn',
 ) -> tuple[list[dict[str, float]], float]:
     hist: list[dict[str, float]] = []
     best_val = float('inf')
@@ -744,8 +750,27 @@ def _policy_evaluation(
             drift_u = _drift_term(env, x, u_x)
             diff_u = _diffusion_term(env, x, u_x, create_graph=True)
             quad = 0.5 * torch.sum(u_x * torch.matmul(u_x, env.Q_t.T), dim=1, keepdim=True)
-            bterm_u = torch.sum(train_coeff.Bcoef * u_x, dim=1, keepdim=True)
-            rhs_u = drift_u + diff_u + quad + train_coeff.A + bterm_u
+            if str(training_mode).lower() == 'pinn':
+                grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
+                v_fb = env.mu_batch(x) + torch.matmul(grad_raw, env.C_train_raw_t.T)
+                pi = _solve_qp_long_only_budget_full(
+                    env.Sigma_train_t,
+                    v_fb,
+                    gamma=env.gamma,
+                    cap=env.risky_cap,
+                    iters=int(env.qp_solver_iters),
+                    tol=float(env.qp_solver_tol),
+                    step_scale=float(env.qp_solver_step_scale),
+                )
+                pi_sigma_pi = torch.sum(pi * torch.matmul(pi, env.Sigma_train_t.T), dim=1, keepdim=True)
+                r = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
+                A = (1.0 - env.gamma) * (r + torch.sum(pi * env.mu_batch(x), dim=1, keepdim=True) - 0.5 * env.gamma * pi_sigma_pi)
+                Bcoef = (1.0 - env.gamma) * torch.matmul(pi, env.C_train_t)
+                bterm_u = torch.sum(Bcoef * u_x, dim=1, keepdim=True)
+                rhs_u = drift_u + diff_u + quad + A + bterm_u
+            else:
+                bterm_u = torch.sum(train_coeff.Bcoef * u_x, dim=1, keepdim=True)
+                rhs_u = drift_u + diff_u + quad + train_coeff.A + bterm_u
             res = u_tau - rhs_u
         else:
             _, g, g_tau, g_x = _g_and_derivs(model_u, tau, x, create_graph=True)
@@ -774,8 +799,27 @@ def _policy_evaluation(
                 drift_v = _drift_term(env, x_v, u_x_v)
                 diff_v = _diffusion_term(env, x_v, u_x_v, create_graph=False)
                 quad_v = 0.5 * torch.sum(u_x_v * torch.matmul(u_x_v, env.Q_t.T), dim=1, keepdim=True)
-                bterm_v = torch.sum(val_coeff.Bcoef * u_x_v, dim=1, keepdim=True)
-                rhs_v = drift_v + diff_v + quad_v + val_coeff.A + bterm_v
+                if str(training_mode).lower() == 'pinn':
+                    grad_raw_v = torch.matmul(u_x_v, env.Lz_inv_t) if env.state_whiten_enabled else u_x_v
+                    v_fb_v = env.mu_batch(x_v) + torch.matmul(grad_raw_v, env.C_train_raw_t.T)
+                    pi_v = _solve_qp_long_only_budget_full(
+                        env.Sigma_train_t,
+                        v_fb_v,
+                        gamma=env.gamma,
+                        cap=env.risky_cap,
+                        iters=int(env.qp_solver_iters),
+                        tol=float(env.qp_solver_tol),
+                        step_scale=float(env.qp_solver_step_scale),
+                    )
+                    pi_sigma_pi_v = torch.sum(pi_v * torch.matmul(pi_v, env.Sigma_train_t.T), dim=1, keepdim=True)
+                    r_v = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
+                    A_v = (1.0 - env.gamma) * (r_v + torch.sum(pi_v * env.mu_batch(x_v), dim=1, keepdim=True) - 0.5 * env.gamma * pi_sigma_pi_v)
+                    Bcoef_v = (1.0 - env.gamma) * torch.matmul(pi_v, env.C_train_t)
+                    bterm_v = torch.sum(Bcoef_v * u_x_v, dim=1, keepdim=True)
+                    rhs_v = drift_v + diff_v + quad_v + A_v + bterm_v
+                else:
+                    bterm_v = torch.sum(val_coeff.Bcoef * u_x_v, dim=1, keepdim=True)
+                    rhs_v = drift_v + diff_v + quad_v + val_coeff.A + bterm_v
                 res_v = u_tau_v - rhs_v
             else:
                 _, g_v, g_tau_v, g_x_v = _g_and_derivs(model_u, tau_v, x_v, create_graph=False)
@@ -859,6 +903,7 @@ def train_pipinn_policy(
     progress_label: str | None = None,
     tau_max: float | None = None,
     warm_start_from: 'TrainedPIPINN | None' = None,
+    training_mode: str = 'pipinn',
 ) -> TrainedPIPINN:
     del transaction_cost
     if states_t.shape[1] <= 0:
@@ -957,7 +1002,9 @@ def train_pipinn_policy(
     global_epoch = 0
     show_progress = bool(getattr(cfg.pipinn, 'show_progress', False))
     show_epoch_progress = bool(getattr(cfg.pipinn, 'show_epoch_progress', False))
-    outer_iter = range(1, max(int(cfg.pipinn.outer_iters), 1) + 1)
+    training_mode_norm = str(training_mode).lower()
+    outer_iters = max(int(cfg.pipinn.outer_iters), 1)
+    outer_iter = range(1, outer_iters + 1)
     if show_progress:
         outer_iter = tqdm(outer_iter, desc=str(progress_label or 'PI-PINN training'), unit='outer')
     for it in outer_iter:
@@ -991,7 +1038,8 @@ def train_pipinn_policy(
             w_bc_dx=float(cfg.pipinn.w_bc_dx),
             grad_clip=float(cfg.pipinn.grad_clip),
             show_progress=show_epoch_progress,
-            progress_desc=f"{progress_label or 'PI-PINN'} outer {int(it)}",
+            progress_desc=f"{progress_label or ('PINN' if training_mode_norm == 'pinn' else 'PI-PINN')} outer {int(it)}",
+            training_mode=training_mode_norm,
         )
         for row in hist:
             global_epoch += 1

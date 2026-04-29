@@ -197,7 +197,7 @@ class PIPINNConfig(BaseModel):
         return self
 
 class Config(BaseModel):
-    optimizer_backend: Literal['ppgdpo', 'pipinn'] = 'ppgdpo'
+    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn'] = 'ppgdpo'
     project: ProjectConfig
     data: DataConfig
     split: SplitConfig

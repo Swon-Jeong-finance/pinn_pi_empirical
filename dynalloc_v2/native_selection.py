@@ -2885,7 +2885,7 @@ def native_select_factor_suite(
                 optimizer_backend=str(lite_cfg.optimizer_backend),
                 pipinn_payload=_pipinn_payload_from_lite_cfg(lite_cfg),
             )
-        cfg_filename = 'config_empirical_pipinn_apt.yaml' if str(lite_cfg.optimizer_backend).lower() == 'pipinn' else 'config_empirical_ppgdpo_apt.yaml'
+        cfg_filename = 'config_empirical_pipinn_apt.yaml' if str(lite_cfg.optimizer_backend).lower() in {'pipinn', 'pinn'} else 'config_empirical_ppgdpo_apt.yaml'
         cfg_path = rank_dir / cfg_filename
         cfg_path.write_text(yaml.safe_dump(cfg_payload, sort_keys=False), encoding='utf-8')
         meta_yaml = rank_dir / 'candidate_metadata.yaml'
@@ -2994,7 +2994,7 @@ def native_select_factor_suite(
             'rerank_covariance_models': [spec.label for spec in rerank_cov_specs],
         'stage2_model_variants': [spec.label for spec in stage2_model_specs],
             'transaction_cost_bps': lite_cfg.transaction_cost_bps,
-            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() == 'pipinn' else None,
+            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'pipinn', 'pinn'} else None,
             'score_mode': (
                 'stage2 protocol+covariance selection with backend-aware dynamic optimizer; ce_est + 1.0*gain_vs_zero, with gain_vs_myopic kept for reporting only and final winners chosen by global rerank across all stage2 models from stage1 survivors'
                 if diagnostic_units else
@@ -3092,7 +3092,7 @@ def native_select_factor_suite(
             'rerank_covariance_models': [spec.label for spec in rerank_cov_specs],
         'stage2_model_variants': [spec.label for spec in stage2_model_specs],
             'transaction_cost_bps': lite_cfg.transaction_cost_bps,
-            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() == 'pipinn' else None,
+            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'pipinn', 'pinn'} else None,
             'score_mode': (
                 'stage2 protocol+covariance selection with backend-aware dynamic optimizer; ce_est + 1.0*gain_vs_zero, with gain_vs_myopic kept for reporting only and final winners chosen by global rerank across all stage2 models from stage1 survivors'
                 if diagnostic_units else

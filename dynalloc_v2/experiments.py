@@ -381,8 +381,8 @@ def _fit_dynamic_policy_backend(
         regime_smoothing=cfg.covariance_model.regime_smoothing,
         regime_sharpness=cfg.covariance_model.regime_sharpness,
     )
-    backend = str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower()
-    if backend == 'pipinn':
+    backend = _optimizer_backend(cfg)
+    if backend in {'pipinn', 'pinn'}:
         trainer = train_pipinn_policy(
             state_train,
             ret_train_next,
@@ -1015,8 +1015,9 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 steps=max(250, cfg.policy.pgd_steps),
                 step_size=cfg.policy.step_size,
             )
-            cross_sample = cross_est.cross.to_numpy(dtype=float)
-            cross_base = cross_est.dynamic_model.current_cross_covariance() if cross_est.dynamic_model is not None else cross_sample
+            # cross_sample = cross_est.cross.to_numpy(dtype=float)
+            # cross_base = cross_est.dynamic_model.current_cross_covariance() if cross_est.dynamic_model is not None else cross_sample
+            cross_base = cross_est.current_cross()
             zero_cross = np.zeros_like(cross_base)
             regime_gated_cross = (1.0 - regime_prob) * cross_base
             cross_lookup = {

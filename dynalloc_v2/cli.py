@@ -299,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--selection-transaction-cost-bps', type=float, default=0.0)
     p_native.add_argument('--ppgdpo-lite-covariance-mode', choices=['full', 'diag'], default='full')
     p_native.add_argument('--selection-eval-mode', choices=['projection', 'pure_qp'], default='pure_qp')
-    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn'], default='pipinn')
+    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn'], default='pipinn')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
     p_native.add_argument('--pipinn-outer-iters', type=int, default=10)
