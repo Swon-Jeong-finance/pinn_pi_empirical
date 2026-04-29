@@ -25,7 +25,33 @@ class RankSweepArtifacts:
     progress_csv: Path
     results_csv: Path
 
+def _resolve_manifest_transaction_cost_bps(
+    manifest: dict[str, Any],
+    entry: dict[str, Any],
+) -> float | None:
+    """Look for a transaction_cost_bps value in the manifest/entry.
 
+    Precedence (first non-None wins):
+      1. entry-level 'comparison_transaction_cost_bps'
+      2. entry-level 'transaction_cost_bps'
+      3. manifest 'comparison.transaction_cost_bps'
+      4. manifest top-level 'comparison_transaction_cost_bps'
+      5. manifest 'ppgdpo_lite.transaction_cost_bps'
+    Returns None if none of these are set, in which case the per-rank YAML
+    value is left untouched.
+    """
+    candidates: list[Any] = [
+        entry.get('comparison_transaction_cost_bps'),
+        entry.get('transaction_cost_bps'),
+        (manifest.get('comparison') or {}).get('transaction_cost_bps'),
+        manifest.get('comparison_transaction_cost_bps'),
+        (manifest.get('ppgdpo_lite') or {}).get('transaction_cost_bps'),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        return float(candidate)
+    return None
 
 def _safe_copy(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -52,6 +78,8 @@ def _run_single_rank_protocol(
     mc_rollouts_override: int | None,
     mc_sub_batch_override: int | None,
     transaction_cost_bps_override: float | None,
+    risky_cap_override: float | None,
+    cash_floor_override: float | None,
     emit_legacy_fixed_layout: bool,
 ) -> dict[str, Any]:
     rank = int(entry['rank'])
@@ -77,6 +105,14 @@ def _run_single_rank_protocol(
         cfg.ppgdpo.mc_sub_batch = int(mc_sub_batch_override)
     if transaction_cost_bps_override is not None:
         cfg.comparison.transaction_cost_bps = float(transaction_cost_bps_override)
+    else:
+        manifest_tc = _resolve_manifest_transaction_cost_bps(manifest, entry)
+        if manifest_tc is not None:
+            cfg.comparison.transaction_cost_bps = float(manifest_tc)
+    if risky_cap_override is not None:
+        cfg.policy.risky_cap = float(risky_cap_override)
+    if cash_floor_override is not None:
+        cfg.policy.cash_floor = float(cash_floor_override)
 
     artifacts = run_experiment(cfg)
 
@@ -106,6 +142,8 @@ def _run_single_rank_protocol(
         'rebalance_every': int(cfg.split.rebalance_every),
         'rolling_train_months': int(cfg.split.rolling_train_months) if cfg.split.rolling_train_months is not None else None,
         'transaction_cost_bps': float(cfg.comparison.transaction_cost_bps),
+        'risky_cap': float(cfg.policy.risky_cap),
+        'cash_floor': float(cfg.policy.cash_floor),
     }
     (protocol_dir / '_done.yaml').write_text(yaml.safe_dump(done_payload, sort_keys=False), encoding='utf-8')
     (protocol_dir / 'stage21_rank_report.yaml').write_text(yaml.safe_dump(done_payload, sort_keys=False), encoding='utf-8')
@@ -136,6 +174,8 @@ def _run_single_rank_protocol(
         'mc_rollouts': int(cfg.ppgdpo.mc_rollouts),
         'mc_sub_batch': int(cfg.ppgdpo.mc_sub_batch),
         'transaction_cost_bps': float(cfg.comparison.transaction_cost_bps),
+        'risky_cap': float(cfg.policy.risky_cap),
+        'cash_floor': float(cfg.policy.cash_floor),
     }
 
 def run_rank_sweep(
@@ -144,6 +184,8 @@ def run_rank_sweep(
     mc_rollouts_override: int | None = None,
     mc_sub_batch_override: int | None = None,
     transaction_cost_bps_override: float | None = None,
+    risky_cap_override: float | None = None,
+    cash_floor_override: float | None = None,
     oos_protocols: list[str] | tuple[str, ...] | None = None,
     emit_legacy_fixed_layout: bool = False,
     max_parallel: int = 1,
@@ -186,6 +228,8 @@ def run_rank_sweep(
                 'mc_rollouts_override': mc_rollouts_override,
                 'mc_sub_batch_override': mc_sub_batch_override,
                 'transaction_cost_bps_override': transaction_cost_bps_override,
+                'risky_cap_override': risky_cap_override,
+                'cash_floor_override': cash_floor_override,
                 'emit_legacy_fixed_layout': emit_legacy_fixed_layout,
             })
 

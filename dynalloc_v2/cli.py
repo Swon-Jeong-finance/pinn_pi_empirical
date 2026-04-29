@@ -94,6 +94,8 @@ def cmd_run_rank_sweep(args):
         emit_legacy_fixed_layout=bool(args.emit_legacy_fixed_layout),
         max_parallel=args.max_parallel,
         parallel_backend=args.parallel_backend,
+        risky_cap_override=args.risky_cap,
+        cash_floor_override=args.cash_floor,
     )
     print(f'output_dir: {artifacts.out_dir}')
     print(f'progress_csv: {artifacts.progress_csv}')
@@ -156,6 +158,8 @@ def cmd_select_native_suite(args):
         ppgdpo_lite_mc_rollouts=args.ppgdpo_lite_mc_rollouts,
         ppgdpo_lite_mc_sub_batch=args.ppgdpo_lite_mc_sub_batch,
         selection_transaction_cost_bps=args.selection_transaction_cost_bps,
+        risky_cap=args.risky_cap,
+        cash_floor=args.cash_floor,
         ppgdpo_lite_covariance_mode=args.ppgdpo_lite_covariance_mode,
         selection_eval_mode=args.selection_eval_mode,
         selection_optimizer_backend=args.selection_optimizer_backend,
@@ -281,6 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--candidate-zoo', choices=['pls_only', 'factor_zoo_v1', 'factor_zoo_v2'], default='factor_zoo_v2')
     p_native.add_argument('--max-candidates', type=int, default=None)
     p_native.add_argument('--rerank-top-n', type=int, default=8)
+    p_native.add_argument('--risky-cap', type=float, default=1.0)
+    p_native.add_argument('--cash-floor', type=float, default=0.0)
     p_native.add_argument('--selection-split-mode', choices=['trailing_holdout', 'expanding_cv'], default='trailing_holdout')
     p_native.add_argument('--selection-val-months', type=int, default=240)
     p_native.add_argument('--selection-device', default='cpu')
@@ -343,6 +349,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_rank.add_argument('--ppgdpo-mc-rollouts', type=int, default=None)
     p_rank.add_argument('--ppgdpo-mc-sub-batch', type=int, default=None)
     p_rank.add_argument('--transaction-cost-bps', type=float, default=None,help='Override comparison.transaction_cost_bps (in bps) for every rank/protocol in the sweep. If omitted, per-rank YAML value is used.',)
+    p_rank.add_argument('--risky-cap', type=float, default=None, help='Override policy.risky_cap for every rank/protocol in the sweep.')
+    p_rank.add_argument('--cash-floor', type=float, default=None, help='Override policy.cash_floor for every rank/protocol in the sweep.')
     p_rank.add_argument('--oos-protocols', nargs='+', default=None, help='Requested OOS protocols. Supports fixed, expanding_annual, rolling20y_annual, rolling_selected_annual, selected_protocol, and rolling{N}m_annual.',)
     p_rank.add_argument('--emit-legacy-fixed-layout', action='store_true')
     p_rank.add_argument('--max-parallel', type=int, default=1, help='Run rank/protocol jobs concurrently when >1.')
