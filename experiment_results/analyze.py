@@ -10,6 +10,7 @@ import argparse
 import yaml
 
 TARGET_STRATEGIES = ["pipinn", "myopic", "pipinn_zero"]
+DERIVED_STRATEGIES = ["dynamic_myopic", "dynamic_hedging"]
 
 def max_drawdown_from_wealth(wealth: pd.Series) -> float:
     running_max = wealth.cummax()
@@ -174,10 +175,76 @@ def build_monthly_panel(file_map, rank: int) -> pd.DataFrame:
     frames.append(full_panel)
 
     panel = pd.concat(frames, axis=0, ignore_index=True)
+    panel = append_dynamic_decomposition(panel)
     panel = panel[["strategy", "sample", "return_date", "net_return", "gross_return", "turnover", "risky_weight", "wealth"]]
     return panel.sort_values(["sample", "strategy", "return_date"]).reset_index(drop=True)
 
-def save_plot(panel: pd.DataFrame, rank: int, outdir: Path, target_label: str):
+def append_dynamic_decomposition(panel: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add two derived strategies per sample/date:
+      - dynamic_myopic  := pipinn_zero
+      - dynamic_hedging := pipinn - pipinn_zero
+    """
+    base = panel[panel["strategy"].isin(["pipinn", "pipinn_zero"])].copy()
+    if base.empty:
+        return panel
+
+    merged = (
+        base.pivot_table(
+            index=["sample", "return_date"],
+            columns="strategy",
+            values=["net_return", "gross_return", "turnover", "risky_weight"],
+            aggfunc="first",
+        )
+        .sort_index()
+    )
+    required = [("net_return", "pipinn"), ("net_return", "pipinn_zero")]
+    if any(col not in merged.columns for col in required):
+        return panel
+
+    rows = []
+    for (sample, return_date), row in merged.iterrows():
+        pipinn_zero_net = row.get(("net_return", "pipinn_zero"), np.nan)
+        pipinn_zero_gross = row.get(("gross_return", "pipinn_zero"), np.nan)
+        pipinn_zero_turnover = row.get(("turnover", "pipinn_zero"), np.nan)
+        pipinn_zero_risky = row.get(("risky_weight", "pipinn_zero"), np.nan)
+        pipinn_net = row.get(("net_return", "pipinn"), np.nan)
+        pipinn_gross = row.get(("gross_return", "pipinn"), np.nan)
+        pipinn_turnover = row.get(("turnover", "pipinn"), np.nan)
+        pipinn_risky = row.get(("risky_weight", "pipinn"), np.nan)
+
+        rows.append({
+            "strategy": "dynamic_myopic",
+            "sample": sample,
+            "return_date": return_date,
+            "net_return": pipinn_zero_net,
+            "gross_return": pipinn_zero_gross,
+            "turnover": pipinn_zero_turnover,
+            "risky_weight": pipinn_zero_risky,
+        })
+        rows.append({
+            "strategy": "dynamic_hedging",
+            "sample": sample,
+            "return_date": return_date,
+            "net_return": pipinn_net - pipinn_zero_net,
+            "gross_return": pipinn_gross - pipinn_zero_gross,
+            "turnover": pipinn_turnover - pipinn_zero_turnover,
+            "risky_weight": pipinn_risky - pipinn_zero_risky,
+        })
+
+    derived = pd.DataFrame(rows)
+    derived["wealth"] = derived.groupby(["sample", "strategy"])["net_return"].transform(lambda x: (1 + x).cumprod())
+    return pd.concat([panel, derived], axis=0, ignore_index=True)
+
+def save_plot(
+    panel: pd.DataFrame,
+    rank: int,
+    outdir: Path,
+    target_label: str,
+    plot_dpi: int = 160,
+    plot_format: str = "png",
+    font_size: float = 12.0,
+    ):
     for sample in ["IS", "OOS", "IS+OOS"]:
         fig, ax = plt.subplots(figsize=(10, 5))
         sub = panel[panel["sample"] == sample].copy()
@@ -185,17 +252,77 @@ def save_plot(panel: pd.DataFrame, rank: int, outdir: Path, target_label: str):
             g = sub[sub["strategy"] == strategy].sort_values("return_date")
             if len(g) == 0:
                 continue
-            ax.plot(g["return_date"], g["wealth"], label=strategy)
-        ax.set_title(f"{target_label.upper()} Rank {rank} - Cumulative Wealth ({sample})")
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Cumulative wealth")
-        ax.legend()
+            start_date = g["return_date"].iloc[0] - pd.DateOffset(months=1)
+            plot_dates = pd.concat([pd.Series([start_date]), g["return_date"].reset_index(drop=True)], ignore_index=True)
+            plot_wealth = pd.concat([pd.Series([1.0]), g["wealth"].reset_index(drop=True)], ignore_index=True)
+            ax.plot(plot_dates, plot_wealth, label=strategy)
+        ax.set_title(f"{target_label.upper()} Rank {rank} - Cumulative Wealth ({sample})", fontsize=font_size)
+        ax.set_xlabel("Date", fontsize=font_size)
+        ax.set_ylabel("Cumulative wealth", fontsize=font_size)
+        ax.tick_params(axis="both", labelsize=font_size)
+        ax.legend(fontsize=font_size)
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
         suffix = sample.lower().replace("+", "plus")
-        fig.savefig(outdir / f"{target_label}_rank{rank}_cumwealth_{suffix}.png", dpi=160)
+        fig.savefig(outdir / f"{target_label}_rank{rank}_cumwealth_{suffix}.{plot_format}", dpi=plot_dpi, format=plot_format)
         plt.close(fig)
 
+        # decomposition plots: separate figures to avoid scale masking
+        for strategy in DERIVED_STRATEGIES:
+            g = sub[sub["strategy"] == strategy].sort_values("return_date")
+            if len(g) == 0:
+                continue
+
+            fig2, ax2 = plt.subplots(figsize=(10, 5))
+            ax2.plot(g["return_date"], g["wealth"], label=strategy)
+            ax2.set_title(f"{target_label.upper()} Rank {rank} - {strategy} Wealth ({sample})")
+            ax2.set_xlabel("Date")
+            ax2.set_ylabel("Cumulative wealth")
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            fig2.tight_layout()
+            fig2.savefig(outdir / f"{target_label}_rank{rank}_cumwealth_{strategy}_{suffix}.{plot_format}", dpi=plot_dpi, format=plot_format)
+            plt.close(fig2)
+
+            fig3, ax3 = plt.subplots(figsize=(10, 5))
+            ax3.plot(g["return_date"], g["risky_weight"], label=strategy)
+            ax3.set_title(f"{target_label.upper()} Rank {rank} - {strategy} Risky Weight ({sample})")
+            ax3.set_xlabel("Date")
+            ax3.set_ylabel("Risky weight")
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            fig3.tight_layout()
+            fig3.savefig(outdir / f"{target_label}_rank{rank}_risky_weight_{strategy}_{suffix}.{plot_format}", dpi=plot_dpi, format=plot_format)
+            plt.close(fig3)
+
+def save_risky_weight_plot(
+    panel: pd.DataFrame,
+    rank: int,
+    outdir: Path,
+    target_label: str,
+    plot_dpi: int = 160,
+    plot_format: str = "png",
+    font_size: float = 12.0,
+):
+    for sample in ["IS", "OOS", "IS+OOS"]:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        sub = panel[panel["sample"] == sample].copy()
+        for strategy in TARGET_STRATEGIES:
+            g = sub[sub["strategy"] == strategy].sort_values("return_date")
+            if len(g) == 0:
+                continue
+            ax.plot(g["return_date"], g["risky_weight"], label=strategy)
+        ax.set_title(f"{target_label.upper()} Rank {rank} - Risky Weight ({sample})", fontsize=font_size)
+        ax.set_xlabel("Date", fontsize=font_size)
+        ax.set_ylabel("Risky weight", fontsize=font_size)
+        ax.tick_params(axis="both", labelsize=font_size)
+        ax.legend(fontsize=font_size)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        suffix = sample.lower().replace("+", "plus")
+        fig.savefig(outdir / f"{target_label}_rank{rank}_risky_weight_{suffix}.{plot_format}", dpi=plot_dpi, format=plot_format)
+        plt.close(fig)
+        
 def merge_three_summaries(file_map, rank: int, gamma: float = 5.0, summary_kind: str = "all") -> pd.DataFrame:
     is_sum = load_summary(file_map, rank, oos=False, summary_kind=summary_kind).rename(columns=lambda c: f"IS_{c}" if c != "strategy" else c)
     oos_sum = load_summary(file_map, rank, oos=True, summary_kind=summary_kind).rename(columns=lambda c: f"OOS_{c}" if c != "strategy" else c)
@@ -300,6 +427,9 @@ def main():
     parser.add_argument("--gamma", type=float, default=5.0, help="Risk aversion used in CER calculation")
     parser.add_argument("--target-label", type=str, default="auto", help="Output filename prefix (e.g., ff25). 'auto' infers from path")
     parser.add_argument("--summary-kind", type=str, choices=["all", "zero", "auto"], default="all", help="Summary preference: all(default), zero, or auto(all->zero fallback)")
+    parser.add_argument("--plot-dpi", type=int, default=160, help="DPI used when saving cumulative wealth plots")
+    parser.add_argument("--plot-format", type=str, choices=["png", "eps"], default="png", help="Image format for cumulative wealth plots")
+    parser.add_argument("--plot-font-size", type=float, default=12.0, help="Font size used for title, axis labels, ticks, and legend in cumulative wealth plots")
     args = parser.parse_args()
 
     input_path = Path(args.input_path)
@@ -338,7 +468,25 @@ def main():
             summary = merge_three_summaries(file_map, rank, gamma=args.gamma, summary_kind=args.summary_kind)
             summary.to_csv(outdir / f"{target_label}_rank{rank}_summary_IS_OOS_full.csv", index=False)
 
-            save_plot(panel.drop(columns=["rank"]), rank, outdir, target_label=target_label)
+            save_plot(
+                panel.drop(columns=["rank"]),
+                rank,
+                outdir,
+                target_label=target_label,
+                plot_dpi=args.plot_dpi,
+                plot_format=args.plot_format,
+                font_size=args.plot_font_size,
+            )
+
+            save_risky_weight_plot(
+                panel.drop(columns=["rank"]),
+                rank,
+                outdir,
+                target_label=target_label,
+                plot_dpi=args.plot_dpi,
+                plot_format=args.plot_format,
+                font_size=args.plot_font_size,
+            )
 
             combined_summary_frames.append(summary)
             combined_panel_frames.append(panel)
