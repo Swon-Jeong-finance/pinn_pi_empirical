@@ -983,8 +983,18 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         latest_factor_return = _latest_factor_return_row(cfg, factors, factor_repr, pd.Timestamp(date_t))
         regime_prob = _resolve_regime_probability(cov_model, mean_model, latest_factor_return)
         mu = mean_model.predict(state_row, latest_factor_return=latest_factor_return, regime_weight=regime_prob if mean_model.kind == 'factor_apt_regime' else None)
-        cov_fc = cov_model.predict(state_row, latest_factor_return, factor_repr.loadings, factor_repr.residual_var)
-        cov_full = cov_fc.asset_cov
+        if backend in {'pipinn', 'pinn'}:
+            # PI-PINN/PINN: keep evaluation covariance on the same joint estimator
+            # that produced Sigma_train, Q, and C during training.
+            # Use the same asset order as the PI-PINN trainer (mean_model.assets) to guarantee
+            # row/column alignment between cov_eval, mu_arr, and trainer.policy_weights output.
+            trainer_asset_order = list(mean_model.assets)
+            ret_source_order = list(cross_est.cross.index)
+            asset_perm = [ret_source_order.index(a) for a in trainer_asset_order]
+            cov_full = np.asarray(cross_est.current_asset_cov(), dtype=float)[np.ix_(asset_perm, asset_perm)]
+        else:
+            cov_fc = cov_model.predict(state_row, latest_factor_return, factor_repr.loadings, factor_repr.residual_var)
+            cov_full = cov_fc.asset_cov
         cov_diag = np.diag(np.diag(cov_full))
         cov_eval = cov_full if cfg.ppgdpo.covariance_mode == 'full' else cov_diag
         mu_arr = mu.to_numpy(dtype=float)
@@ -1087,9 +1097,21 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 targets[('risk_parity', benchmark_cross_mode)] = solve_risk_parity(sample_cov_train, effective_risky_cap, steps=max(500, cfg.policy.pgd_steps * 3))
             if ('market' in benchmark_set) and (market_factor_col is None):
                 targets[('market', benchmark_cross_mode)] = solve_equal_weight(returns.shape[1], effective_risky_cap)
+            # PI-PINN/PINN path doesn't construct cov_fc; build factor_var directly from
+            # the factor representation so logging is well-defined under both backends.
+            if backend in {'pipinn', 'pinn'}:
+                factor_var_dict = {
+                    str(c): float(v)
+                    for c, v in zip(factor_repr.loadings.columns, np.diag(cov_full))[: len(factor_repr.loadings.columns)]
+                } if False else {}
+                # Simplest: keep factor_var empty for PI-PINN/PINN since the joint
+                # estimator doesn't expose per-factor variance separately.
+                factor_var_dict = {}
+            else:
+                factor_var_dict = {k: float(v) for k, v in cov_fc.factor_var.items()}
             last_meta = {
                 'mu_l1': float(np.abs(mu_arr).sum()),
-                'factor_var_json': json.dumps({k: float(v) for k, v in cov_fc.factor_var.items()}),
+                'factor_var_json': json.dumps(factor_var_dict),
                 'factor_mu_json': json.dumps({k: float(v) for k, v in (factor_mu if factor_mu is not None else pd.Series(dtype=float)).items()}),
                 'mean_model_kind': cfg.mean_model.kind,
             }

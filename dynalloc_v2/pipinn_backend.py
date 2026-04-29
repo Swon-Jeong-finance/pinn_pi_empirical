@@ -865,28 +865,55 @@ def _policy_evaluation(
     return hist, best_val
 
 
+# def _select_training_covariance(
+#     *,
+#     cfg: Any,
+#     cov_model: Any,
+#     cross_est: CrossCovarianceEstimate,
+#     state_train: pd.DataFrame,
+#     factor_train: pd.DataFrame,
+#     loadings: pd.DataFrame,
+#     residual_var: pd.Series,
+# ) -> np.ndarray:
+#     mode = str(cfg.pipinn.covariance_train_mode)
+#     if mode == 'cross_resid':
+#         return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
+#     if len(state_train) <= 0:
+#         return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
+#     state_row = state_train.iloc[-1]
+#     latest_factor_return = factor_train.iloc[-1] if len(factor_train) > 0 else pd.Series(dtype=float)
+#     try:
+#         cov_fc = cov_model.predict(state_row, latest_factor_return, loadings, residual_var)
+#         return _symmetrize_psd(np.asarray(cov_fc.asset_cov, dtype=float), floor=1.0e-10)
+#     except Exception:
+#         return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
+
 def _select_training_covariance(
     *,
     cfg: Any,
-    cov_model: Any,
+    cov_model: Any,                      # kept in signature for caller compatibility; unused
     cross_est: CrossCovarianceEstimate,
     state_train: pd.DataFrame,
-    factor_train: pd.DataFrame,
-    loadings: pd.DataFrame,
-    residual_var: pd.Series,
+    factor_train: pd.DataFrame,           # unused but kept for caller compatibility
+    loadings: pd.DataFrame,               # unused
+    residual_var: pd.Series,              # unused
 ) -> np.ndarray:
+    """
+    PI-PINN training covariance is taken from the *same* joint estimator that
+    supplies Q and C, ensuring (Sigma_SS, Sigma_SY, Sigma_YY) form a single
+    consistent (n+k)x(n+k) PSD block matrix.
+
+    - covariance_train_mode == 'cross_resid' : explicit sample asset block
+                                               (no DCC, sample-consistent)
+    - covariance_train_mode == 'dcc_current' : joint DCC asset block (default)
+    """
+    del cov_model, factor_train, loadings, residual_var  # joint estimator is authoritative
     mode = str(cfg.pipinn.covariance_train_mode)
     if mode == 'cross_resid':
-        return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
-    if len(state_train) <= 0:
-        return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
-    state_row = state_train.iloc[-1]
-    latest_factor_return = factor_train.iloc[-1] if len(factor_train) > 0 else pd.Series(dtype=float)
-    try:
-        cov_fc = cov_model.predict(state_row, latest_factor_return, loadings, residual_var)
-        return _symmetrize_psd(np.asarray(cov_fc.asset_cov, dtype=float), floor=1.0e-10)
-    except Exception:
-        return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
+        sigma = np.asarray(cross_est.return_resid_cov, dtype=float)
+    else:  # 'dcc_current' (and any future joint mode)
+        sigma = np.asarray(cross_est.current_asset_cov(), dtype=float)
+    return _symmetrize_psd(sigma, floor=1.0e-10)
 
 
 def train_pipinn_policy(

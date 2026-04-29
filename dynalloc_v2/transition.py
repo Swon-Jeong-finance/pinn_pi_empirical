@@ -99,6 +99,12 @@ class DynamicCrossCovariance:
     def _asset_state_block(self, cov: np.ndarray) -> np.ndarray:
         return cov[: self.n_assets, self.n_assets :]
 
+    def _asset_asset_block(self, cov: np.ndarray) -> np.ndarray:
+        return cov[: self.n_assets, : self.n_assets]
+
+    def _state_state_block(self, cov: np.ndarray) -> np.ndarray:
+        return cov[self.n_assets :, self.n_assets :]
+
     def _update_dcc_state(self, resid: np.ndarray) -> None:
         std = np.sqrt(np.maximum(self.last_var_, self.variance_floor))
         z = np.divide(resid, std, out=np.zeros_like(resid, dtype=float), where=std > 0)
@@ -215,15 +221,48 @@ class DynamicCrossCovariance:
         self.regime_score_ = score
         return self
 
-    def current_cross_covariance(self) -> np.ndarray:
+    # def current_cross_covariance(self) -> np.ndarray:
+    #     if self.kind in {'dcc', 'adcc'}:
+    #         cov = self._joint_cov_from_state()
+    #         return self._asset_state_block(cov)
+    #     w_high = self._regime_weight()
+    #     cov_low = self._asset_state_block(np.diag(np.sqrt(np.maximum(self.last_var_low_, self.variance_floor))) @ _corr_from_q(self.last_q_low_, variance_floor=self.variance_floor, correlation_shrink=self.correlation_shrink) @ np.diag(np.sqrt(np.maximum(self.last_var_low_, self.variance_floor))))
+    #     cov_high = self._asset_state_block(np.diag(np.sqrt(np.maximum(self.last_var_high_, self.variance_floor))) @ _corr_from_q(self.last_q_high_, variance_floor=self.variance_floor, correlation_shrink=self.correlation_shrink) @ np.diag(np.sqrt(np.maximum(self.last_var_high_, self.variance_floor))))
+    #     return (1.0 - w_high) * cov_low + w_high * cov_high
+
+    def _regime_joint_cov(self, *, var: np.ndarray, q: np.ndarray) -> np.ndarray:
+        std = np.sqrt(np.maximum(var, self.variance_floor))
+        corr = _corr_from_q(q, variance_floor=self.variance_floor, correlation_shrink=self.correlation_shrink)
+        return np.diag(std) @ corr @ np.diag(std)
+
+    def _current_joint_cov(self) -> np.ndarray:
         if self.kind in {'dcc', 'adcc'}:
-            cov = self._joint_cov_from_state()
-            return self._asset_state_block(cov)
+            return self._joint_cov_from_state()
         w_high = self._regime_weight()
-        cov_low = self._asset_state_block(np.diag(np.sqrt(np.maximum(self.last_var_low_, self.variance_floor))) @ _corr_from_q(self.last_q_low_, variance_floor=self.variance_floor, correlation_shrink=self.correlation_shrink) @ np.diag(np.sqrt(np.maximum(self.last_var_low_, self.variance_floor))))
-        cov_high = self._asset_state_block(np.diag(np.sqrt(np.maximum(self.last_var_high_, self.variance_floor))) @ _corr_from_q(self.last_q_high_, variance_floor=self.variance_floor, correlation_shrink=self.correlation_shrink) @ np.diag(np.sqrt(np.maximum(self.last_var_high_, self.variance_floor))))
+        cov_low = self._regime_joint_cov(var=self.last_var_low_, q=self.last_q_low_)
+        cov_high = self._regime_joint_cov(var=self.last_var_high_, q=self.last_q_high_)
         return (1.0 - w_high) * cov_low + w_high * cov_high
 
+    def current_asset_cov(self) -> np.ndarray:
+        cov = self._current_joint_cov()
+        return _make_psd(cov[: self.n_assets, : self.n_assets], floor=self.variance_floor)
+
+    def current_state_innov_cov(self) -> np.ndarray:
+        cov = self._current_joint_cov()
+        return _make_psd(cov[self.n_assets :, self.n_assets :], floor=self.variance_floor)
+
+    def current_cross(self) -> np.ndarray:
+        cov = self._current_joint_cov()
+        return cov[: self.n_assets, self.n_assets :]
+
+    # backward-compat alias (used by tests)
+    def current_cross_covariance(self) -> np.ndarray:
+        return self.current_cross()
+
+    # alias for callers that expect this name; identical to current_state_innov_cov
+    def current_state_covariance(self) -> np.ndarray:
+        return self.current_state_innov_cov()
+        
     def update_with_realized(
         self,
         *,
@@ -264,7 +303,29 @@ class CrossCovarianceEstimate:
     state_innov_cov: np.ndarray
     dynamic_model: DynamicCrossCovariance | None = None
 
+    @property
+    def asset_cols(self) -> list[str]:
+        return list(self.cross.index)
 
+    @property
+    def state_cols(self) -> list[str]:
+        return list(self.cross.columns)
+
+    def current_asset_cov(self) -> np.ndarray:
+        if self.dynamic_model is not None:
+            return np.asarray(self.dynamic_model.current_asset_cov(), dtype=float)
+        return np.asarray(self.return_resid_cov, dtype=float)
+
+    def current_state_innov_cov(self) -> np.ndarray:
+        if self.dynamic_model is not None:
+            return np.asarray(self.dynamic_model.current_state_innov_cov(), dtype=float)
+        return np.asarray(self.state_innov_cov, dtype=float)
+
+    def current_cross(self) -> np.ndarray:
+        if self.dynamic_model is not None:
+            return np.asarray(self.dynamic_model.current_cross(), dtype=float)
+        return self.cross.to_numpy(dtype=float)
+            
 def fit_state_transition(states_t: pd.DataFrame, states_tp1: pd.DataFrame, ridge_lambda: float = 1.0e-6) -> StateTransitionResult:
     if len(states_t) != len(states_tp1):
         raise ValueError('states_t and states_tp1 must have equal length.')
