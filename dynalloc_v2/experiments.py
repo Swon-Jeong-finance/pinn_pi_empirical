@@ -396,6 +396,7 @@ def _fit_dynamic_policy_backend(
             progress_label=progress_label,
             tau_max=tau_max,
             warm_start_from=prev_trainer,
+            training_mode=backend,
         )
     else:
         trainer = train_warmup_policy(
@@ -534,9 +535,10 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
             'benchmark_source': '',
         }
     if strategy == 'pgdpo':
-        if backend == 'pipinn':
+        if backend in {'pipinn', 'pinn'}:
+            base = 'pinn' if backend == 'pinn' else 'pipinn'
             return {
-                'strategy': 'pipinn_traincov_diag',
+                'strategy': f'{base}_traincov_diag',
                 'cross_mode': 'estimated',
                 'strategy_display': 'pipinn_traincov_diag',
                 'strategy_legacy_label': 'pgdpo',
@@ -556,15 +558,17 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
             'benchmark_source': '',
         }
     if strategy == 'ppgdpo':
-        if backend == 'pipinn':
+        if backend in {'pipinn', 'pinn'}:
+            base = 'pinn' if backend == 'pinn' else 'pipinn'
+            label = 'PINN' if backend == 'pinn' else 'PI-PINN'
             mapping = {
-                'estimated': ('pipinn', 'pipinn', 'ppgdpo', 'PI-PINN value-gradient projection with estimated cross'),
-                'zero': ('pipinn_zero', 'pipinn_zero', 'ppgdpo_zero', 'PI-PINN value-gradient projection with zero cross'),
-                'regime_gated': ('pipinn_regime_gated', 'pipinn_regime_gated', 'ppgdpo_regime_gated', 'PI-PINN value-gradient projection with regime-gated cross'),
+                'estimated': (f'{base}', f'{base}', 'ppgdpo', f'{label} value-gradient projection with estimated cross'),
+                'zero': (f'{base}_zero', f'{base}_zero', 'ppgdpo_zero', f'{label} value-gradient projection with zero cross'),
+                'regime_gated': (f'{base}_regime_gated', f'{base}_regime_gated', 'ppgdpo_regime_gated', f'{label} value-gradient projection with regime-gated cross'),
             }
             out_name, out_display, legacy_name, note = mapping.get(
                 cross_mode,
-                (f'pipinn_{cross_mode}', f'pipinn_{cross_mode}', f'ppgdpo_{cross_mode}', 'PI-PINN projected strategy'),
+                (f'{base}_{cross_mode}', f'{base}_{cross_mode}', f'ppgdpo_{cross_mode}', f'{label} projected strategy'),
             )
             return {
                 'strategy': out_name,
@@ -850,8 +854,8 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
 
     backend = _optimizer_backend(cfg)
     emit_pipinn_frozen_traincov = _emit_pipinn_frozen_traincov_strategy(cfg)
-    save_training_logs = backend == 'pipinn' and bool(getattr(cfg.pipinn, 'save_training_logs', False))
-    show_progress = backend == 'pipinn' and bool(getattr(cfg.pipinn, 'show_progress', False))
+    save_training_logs = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'save_training_logs', False))
+    show_progress = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'show_progress', False))
     
     tc = cfg.comparison.transaction_cost_bps / 10000.0
     protocol_meta = _protocol_constants(cfg)
@@ -945,7 +949,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 cov_model=cov_model,
                 transaction_cost=tc,
                 progress_label=progress_label,
-                tau_max=tau_remaining if backend == 'pipinn' else None,
+                tau_max=tau_remaining if backend in {'pipinn', 'pinn'} else None,
                 prev_trainer=prev_trainer_for_warm,
             )
             sample_cov_train = _sample_covariance(ret_train_next)
@@ -983,16 +987,17 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         latest_factor_return = _latest_factor_return_row(cfg, factors, factor_repr, pd.Timestamp(date_t))
         regime_prob = _resolve_regime_probability(cov_model, mean_model, latest_factor_return)
         mu = mean_model.predict(state_row, latest_factor_return=latest_factor_return, regime_weight=regime_prob if mean_model.kind == 'factor_apt_regime' else None)
+        ret_source_order = list(cross_est.cross.index)
         if backend in {'pipinn', 'pinn'}:
             # PI-PINN/PINN: keep evaluation covariance on the same joint estimator
             # that produced Sigma_train, Q, and C during training.
             # Use the same asset order as the PI-PINN trainer (mean_model.assets) to guarantee
             # row/column alignment between cov_eval, mu_arr, and trainer.policy_weights output.
             trainer_asset_order = list(mean_model.assets)
-            ret_source_order = list(cross_est.cross.index)
             asset_perm = [ret_source_order.index(a) for a in trainer_asset_order]
             cov_full = np.asarray(cross_est.current_asset_cov(), dtype=float)[np.ix_(asset_perm, asset_perm)]
         else:
+            asset_perm = [ret_source_order.index(a) for a in returns.columns]
             cov_fc = cov_model.predict(state_row, latest_factor_return, factor_repr.loadings, factor_repr.residual_var)
             cov_full = cov_fc.asset_cov
         cov_diag = np.diag(np.diag(cov_full))
@@ -1003,7 +1008,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         rebalance_now = _should_rebalance(cfg, i)
         targets: dict[tuple[str, str], np.ndarray] = {}
         if rebalance_now:
-            if backend == 'pipinn':
+            if backend in {'pipinn', 'pinn'}:
                 pgdpo_w = trainer.policy_weights(state_row, tau=tau_remaining)
             else:
                 pgdpo_w = trainer.policy_weights(state_row)
@@ -1012,7 +1017,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             # tau_remaining = float(max(horizon_steps - (i - last_refit_step), 1))
             # last_costates = trainer.estimate_costates(state_row, tau0=tau_remaining)
             # last_costates = trainer.estimate_costates(state_row)
-            if backend == 'pipinn':
+            if backend in {'pipinn', 'pinn'}:
                 last_costates = trainer.estimate_costates(state_row, tau0=tau_remaining)
             else:
                 last_costates = trainer.estimate_costates(state_row)
@@ -1027,7 +1032,10 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             )
             # cross_sample = cross_est.cross.to_numpy(dtype=float)
             # cross_base = cross_est.dynamic_model.current_cross_covariance() if cross_est.dynamic_model is not None else cross_sample
-            cross_base = cross_est.current_cross()
+            cross_base_full = np.asarray(cross_est.current_cross(), dtype=float)
+            state_source_order = list(cross_est.cross.columns)
+            state_perm = [state_source_order.index(s) for s in cfg.state.columns]
+            cross_base = np.asarray(cross_base_full[np.ix_(asset_perm, state_perm)], dtype=float)
             zero_cross = np.zeros_like(cross_base)
             regime_gated_cross = (1.0 - regime_prob) * cross_base
             cross_lookup = {
@@ -1039,27 +1047,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             targets[('pgdpo', reference_cross_mode)] = pgdpo_w
             for cross_mode in cross_modes:
                 cross_mat = cross_lookup.get(str(cross_mode), cross_base)
-                # ppgdpo_w, proj_debug = solve_ppgdpo_projection(
-                #     mu=mu_arr,
-                #     cov=cov_eval,
-                #     cross_mat=cross_mat,
-                #     costates=last_costates,
-                #     risky_cap=cfg.policy.risky_cap,
-                #     cash_floor=cfg.policy.cash_floor,
-                #     wealth=1.0,
-                #     cross_scale=cfg.ppgdpo.cross_strength,
-                #     eps_bar=cfg.ppgdpo.eps_bar,
-                #     ridge=cfg.ppgdpo.newton_ridge,
-                #     tau=cfg.ppgdpo.newton_tau,
-                #     armijo=cfg.ppgdpo.newton_armijo,
-                #     backtrack=cfg.ppgdpo.newton_backtrack,
-                #     max_newton=cfg.ppgdpo.max_newton,
-                #     tol_grad=cfg.ppgdpo.tol_grad,
-                #     max_ls=cfg.ppgdpo.max_line_search,
-                #     interior_margin=cfg.ppgdpo.interior_margin,
-                #     clamp_neg_jxx_min=cfg.ppgdpo.clamp_neg_jxx_min,
-                # )
-                if backend == 'pipinn' and str(getattr(cfg.pipinn, 'policy_output_mode', 'projection')).lower() == 'pure_qp':
+                if backend in {'pipinn', 'pinn'} and str(getattr(cfg.pipinn, 'policy_output_mode', 'projection')).lower() == 'pure_qp':
                     ppgdpo_w, proj_debug = trainer.policy_weights_with_debug(
                         state_row,
                         covariance=cov_eval,
@@ -1201,8 +1189,8 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         benchmark_cross_mode=benchmark_cross_mode,
         market_source=market_source,
         backend=backend,
-        pipinn_ansatz_mode=str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')) if str(backend).lower() == 'pipinn' else None,
-        pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if str(backend).lower() == 'pipinn' else None,
+        pipinn_ansatz_mode=str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
+        pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
     )
     
 

@@ -149,6 +149,8 @@ def _build_v2_config_dict(
     pipinn_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backend = str(optimizer_backend).strip().lower()
+    if backend == 'pinn':
+        backend = 'pipinn'
     if backend not in {'ppgdpo', 'pipinn'}:
         raise ValueError(f'Unsupported optimizer_backend={optimizer_backend!r}')
     run_tag = 'pipinn' if backend == 'pipinn' else 'ppgdpo'

@@ -3,9 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-import numpy as np
-import pandas as pd
 
 
 def _make_psd(mat: np.ndarray, *, floor: float = 1.0e-10) -> np.ndarray:

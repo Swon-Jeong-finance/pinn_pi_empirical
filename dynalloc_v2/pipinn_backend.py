@@ -592,8 +592,8 @@ def _sample_collocation(
 
 def _g_and_derivs(model_u: ValueNet, tau: torch.Tensor, x: torch.Tensor, *, create_graph: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     u = model_u(tau, x)
-    ones = torch.ones_like(g)
     g = torch.exp(u)
+    ones = torch.ones_like(g)
     g_tau = torch.autograd.grad(g, tau, grad_outputs=ones, create_graph=create_graph, retain_graph=True)[0]
     g_x = torch.autograd.grad(g, x, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
     return u, g, g_tau, g_x
