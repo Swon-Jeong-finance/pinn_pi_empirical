@@ -1,0 +1,84 @@
+PINN FOC-CLIP PATCH REPORT
+Generated: 2026-05-01
+
+Source basis:
+- Patched the v2 file set corresponding to the latest uploaded dynalloc_v2(4) snapshot:
+  pipinn_backend.py, experiments.py, schema.py, cli.py, native_selection.py,
+  bridge_common.py, rank_sweep.py.
+- Kept the new covariance block flow intact:
+  current_asset_cov(), current_state_innov_cov(), current_cross().
+
+Methodology target:
+- optimizer_backend='pinn' is treated as traditional PINN.
+- PINN training solves the reduced PDE only; no policy/QP/pi is computed in
+  the PINN training residual.
+- PINN evaluation uses:
+    a = mu + C grad_u
+    pi_unc = Sigma^-1 a / gamma
+    pi_final = long-only clipping + risky-cap scaling
+- The new policy_output_mode is 'foc_clip'.
+- PI-PINN/pipinn retains the existing pure_qp/projection behavior.
+
+Patched file summary:
+1. pipinn_backend.py
+   - Added analytic unconstrained Hamiltonian helper:
+       H = 0.5/gamma * a' Sigma^-1 a
+   - Added _collocation_points_only() so PINN outer iterations resample
+     collocation points without precomputing policy coefficients.
+   - Changed _policy_evaluation(..., training_mode='pinn') to use the analytic
+     Hamiltonian and never call _solve_qp_long_only_budget_full.
+   - Added policy_output_mode='foc_clip' branch:
+       FOC policy -> clipping/scaling.
+   - Added validation that training_mode='pinn' requires foc_clip and a
+     log-transform ansatz.
+
+2. experiments.py
+   - Allows foc_clip to route through trainer.policy_weights_with_debug().
+   - Raises if backend='pinn' but pipinn.policy_output_mode!='foc_clip'.
+   - Updates strategy/benchmark notes for PINN FOC clipping.
+   - Allows PINN auto output subdir behavior alongside PI-PINN.
+
+3. schema.py
+   - Adds policy_output_mode='foc_clip'.
+   - Validates optimizer_backend='pinn' requires foc_clip and a log-transform
+     ansatz.
+
+4. cli.py
+   - Adds foc_clip to --selection-eval-mode.
+   - Adds foc_clip to --pipinn-policy-output-mode.
+
+5. native_selection.py
+   - Validates PINN selection requires:
+       --selection-eval-mode foc_clip
+       --pipinn-policy-output-mode foc_clip
+       log-transform ansatz.
+   - Adds PINN strategy aliases and backend-aware manifest/selected YAML labels.
+   - Allows foc_clip in the legacy/lite evaluation branch.
+
+6. bridge_common.py
+   - Removes pinn -> pipinn aliasing.
+   - Preserves optimizer_backend='pinn' in generated v2 configs.
+   - Ensures PINN configs get/require pipinn.policy_output_mode='foc_clip'.
+
+7. rank_sweep.py
+   - Defensively preserves manifest/entry backend.
+   - Forces foc_clip in rank sweep payloads when selection backend is pinn.
+
+Checks performed:
+- py_compile passed for all 7 patched files.
+- Config accepts optimizer_backend='pinn' + policy_output_mode='foc_clip'.
+- Config rejects optimizer_backend='pinn' + policy_output_mode='pure_qp'.
+- Config rejects optimizer_backend='pinn' + ansatz_mode='ansatz_normalization'.
+- bridge_common._build_v2_config_dict preserves optimizer_backend='pinn'.
+- bridge_common rejects explicit PINN pure_qp payload.
+- Static check: no _solve_qp_long_only_budget_full call inside _policy_evaluation.
+- Tiny smoke test:
+    * Monkeypatched _solve_qp_long_only_budget_full to raise.
+    * Ran train_pipinn_policy(..., training_mode='pinn') for one tiny outer/epoch.
+    * Ran policy_weights_with_debug(..., policy_output_mode='foc_clip').
+    * Both succeeded; returned debug control_update_space='foc_clip' and risky
+      weight sum satisfied cap.
+
+Caveat:
+- The patch intentionally leaves PI-PINN/pipinn pure_qp behavior intact.
+  Only backend='pinn' is forced onto traditional PINN + FOC clipping.
