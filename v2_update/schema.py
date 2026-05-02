@@ -169,7 +169,6 @@ class PIPINNConfig(BaseModel):
     width: int = 96
     depth: int = 4
     covariance_train_mode: Literal['dcc_current', 'cross_resid'] = 'dcc_current'
-    ansatz_mode: Literal['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'] = 'ansatz_normalization_log_transform'
     policy_output_mode: Literal['projection', 'pure_qp', 'foc_clip'] = 'pure_qp'
     qp_solver_iters: int = 300
     qp_solver_tol: float = 1.0e-10
@@ -222,10 +221,5 @@ class Config(BaseModel):
                     "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'. "
                     "Traditional PINN uses FOC-derived unconstrained policy plus clipping, "
                     "not pure_qp/projection policy extraction."
-                )
-            if ansatz not in {'ansatz_log_transform', 'ansatz_normalization_log_transform'}:
-                raise ValueError(
-                    "optimizer_backend='pinn' requires a log-transform ansatz "
-                    "('ansatz_log_transform' or 'ansatz_normalization_log_transform')."
                 )
         return self

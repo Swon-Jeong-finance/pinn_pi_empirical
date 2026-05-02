@@ -96,7 +96,6 @@ def _run_single_rank_protocol(
     if entry_backend == 'pinn':
         payload.setdefault('pipinn', {})
         payload['pipinn']['policy_output_mode'] = 'foc_clip'
-        payload['pipinn'].setdefault('ansatz_mode', 'ansatz_normalization_log_transform')
     base_cfg = Config.model_validate(payload)
     base_output_dir = Path(base_cfg.project.output_dir)
     rank_dir = Path(rank_root) / f'rank_{rank:03d}'

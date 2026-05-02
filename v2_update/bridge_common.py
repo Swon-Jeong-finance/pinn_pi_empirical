@@ -121,7 +121,6 @@ def _default_pipinn_payload() -> dict[str, Any]:
         'save_training_logs': True,
         'show_progress': False,
         'show_epoch_progress': False,
-        'ansatz_mode': 'ansatz_normalization_log_transform',
         'policy_output_mode': 'pure_qp',
         'qp_solver_iters': 300,
         'qp_solver_tol': 1.0e-10,
@@ -261,18 +260,9 @@ def _build_v2_config_dict(
             raw_pipinn_payload = dict(pipinn_payload or {})
             if raw_pipinn_payload.get('policy_output_mode') is None:
                 merged_pipinn['policy_output_mode'] = 'foc_clip'
-            if raw_pipinn_payload.get('ansatz_mode') is None:
-                merged_pipinn['ansatz_mode'] = 'ansatz_normalization_log_transform'
             if str(merged_pipinn.get('policy_output_mode')).lower() != 'foc_clip':
                 raise ValueError(
                     "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'."
-                )
-            if str(merged_pipinn.get('ansatz_mode')).lower() not in {
-                'ansatz_log_transform',
-                'ansatz_normalization_log_transform',
-            }:
-                raise ValueError(
-                    "optimizer_backend='pinn' requires a log-transform ansatz."
                 )
         payload['pipinn'] = merged_pipinn
     return payload

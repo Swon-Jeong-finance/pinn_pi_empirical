@@ -343,26 +343,7 @@ class PIPINNEnvFromPPGDPO:
         self.Q_raw = _symmetrize_psd(np.asarray(q_current[np.ix_(state_perm, state_perm)], dtype=float), floor=1.0e-10)
         self.C_train_raw = np.asarray(c_current[np.ix_(asset_perm, state_perm)], dtype=float)
         self.Sigma_train = _symmetrize_psd(np.asarray(sigma_train, dtype=float), floor=1.0e-10)
-
-        if self.state_whiten_enabled:
-            self.Lz = _matrix_sqrt_psd(self.Q_raw, floor=1.0e-10)
-            self.Lz_inv = np.linalg.pinv(self.Lz)
-            eye = np.eye(self.n_states, dtype=float)
-            self.Q = eye
-            try:
-                self.z_center = -np.linalg.solve(self.drift_matrix, self.drift_intercept)
-            except np.linalg.LinAlgError:
-                self.z_center = states_t.mean(axis=0).to_numpy(dtype=float)
-            self.C_train = self.C_train_raw @ self.Lz_inv.T
-            states_train_coord = (states_t.to_numpy(dtype=float) - self.z_center[None, :]) @ self.Lz_inv.T
-            states_for_domain = pd.DataFrame(states_train_coord, index=states_t.index, columns=self.state_columns)
-        else:
-            self.Lz = np.eye(self.n_states, dtype=float)
-            self.Lz_inv = np.eye(self.n_states, dtype=float)
-            self.z_center = np.zeros(self.n_states, dtype=float)
-            self.Q = self.Q_raw
-            self.C_train = self.C_train_raw
-            states_for_domain = states_t
+        states_for_domain = states_t
 
         self.Sigma_train_t = torch.tensor(self.Sigma_train, device=device, dtype=dtype)
         self.Q_t = torch.tensor(self.Q, device=device, dtype=dtype)
@@ -375,10 +356,6 @@ class PIPINNEnvFromPPGDPO:
         self.sigma_inv_t_T = self.sigma_inv_t.T
         self.Gamma_train = self.sigma_inv @ self.C_train
         self.Gamma_train_t = torch.tensor(self.Gamma_train, device=device, dtype=dtype)
-        
-        self.Lz_t = torch.tensor(self.Lz, device=device, dtype=dtype)
-        self.Lz_inv_t = torch.tensor(self.Lz_inv, device=device, dtype=dtype)
-        self.Lz_inv_t_T = self.Lz_inv_t.T
         
         x_min, x_max = _safe_box_quantiles(
             states_for_domain,
@@ -395,33 +372,15 @@ class PIPINNEnvFromPPGDPO:
         self.state_std = torch.tensor(states_for_domain.std(axis=0, ddof=0).replace(0.0, 1.0).fillna(1.0).to_numpy(dtype=float), device=device, dtype=dtype)
         self.covariance_train_mode = str(cfg.pipinn.covariance_train_mode)
 
-    def _to_raw_state_np(self, x_np: np.ndarray) -> np.ndarray:
-        arr = np.asarray(x_np, dtype=float)
-        if not self.state_whiten_enabled:
-            return arr
-        return self.z_center[None, :] + arr @ self.Lz.T
-
     def mu_batch(self, x: torch.Tensor) -> torch.Tensor:
         x_np = x.detach().cpu().numpy()
-        z_np = self._to_raw_state_np(x_np)
-        mu = self.mean_map.predict_batch(z_np)
+        mu = self.mean_map.predict_batch(x_np)
         return torch.tensor(mu, device=self.device, dtype=self.dtype)
 
     def drift_batch(self, x: torch.Tensor) -> torch.Tensor:
         x_np = x.detach().cpu().numpy()
-        if self.state_whiten_enabled:
-            z_np = self._to_raw_state_np(x_np)
-            drift_raw = self.drift_intercept[None, :] + z_np @ self.drift_matrix.T
-            drift = drift_raw @ self.Lz_inv.T
-        else:
-            drift = self.drift_intercept[None, :] + x_np @ self.drift_matrix.T
+        drift = self.drift_intercept[None, :] + x_np @ self.drift_matrix.T
         return torch.tensor(drift, device=self.device, dtype=self.dtype)
-
-    def grad_training_to_raw(self, grad: np.ndarray) -> np.ndarray:
-        arr = np.asarray(grad, dtype=float).reshape(-1)
-        if not self.state_whiten_enabled:
-            return arr
-        return arr @ self.Lz_inv
 
 class TrainedPIPINN:
     def __init__(
@@ -448,8 +407,6 @@ class TrainedPIPINN:
             arr = state_row[self.state_columns].to_numpy(dtype=float).reshape(1, -1)
         else:
             arr = np.asarray(state_row, dtype=float).reshape(1, -1)
-        if self.env.state_whiten_enabled:
-            arr = (arr - self.env.z_center[None, :]) @ self.env.Lz_inv.T
         return torch.tensor(arr, device=self.env.device, dtype=self.env.dtype)
 
     def grad_u(self, state_row: pd.Series | np.ndarray, *, tau: float | None = None) -> np.ndarray:
@@ -463,8 +420,7 @@ class TrainedPIPINN:
 
     def estimate_costates(self, state_row: pd.Series | np.ndarray, *, wealth: float = 1.0, tau0: float | None = None) -> CostateEstimate:
         wealth = float(max(wealth, 1.0e-12))
-        grad_training = self.grad_u(state_row, tau=tau0)
-        grad = self.env.grad_training_to_raw(grad_training)
+        grad = self.grad_u(state_row, tau=tau0)
         return CostateEstimate(
             JX=1.0 / wealth,
             JXX=-float(self.env.gamma) / (wealth * wealth),
@@ -507,7 +463,6 @@ class TrainedPIPINN:
         else:
             x = np.asarray(state_row, dtype=float).reshape(1, -1)
         mu = self.env.mean_map.predict_batch(x).reshape(-1)
-        grad_training = self.grad_u(state_row, tau=tau)
         grad_raw = self.env.grad_training_to_raw(grad_training)
         mu_term = np.asarray(mu, dtype=float).reshape(-1)
 
@@ -657,14 +612,6 @@ def _sample_collocation(
     return tau.reshape(-1, 1), x, taub, xb
 
 
-def _g_and_derivs(model_u: ValueNet, tau: torch.Tensor, x: torch.Tensor, *, create_graph: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    u = model_u(tau, x)
-    g = torch.exp(u)
-    ones = torch.ones_like(g)
-    g_tau = torch.autograd.grad(g, tau, grad_outputs=ones, create_graph=create_graph, retain_graph=True)[0]
-    g_x = torch.autograd.grad(g, x, grad_outputs=ones, create_graph=True, retain_graph=True)[0]
-    return u, g, g_tau, g_x
-
 def _u_derivs(model_u: ValueNet, tau: torch.Tensor, x: torch.Tensor, *, create_graph: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     u = model_u(tau, x)
     ones = torch.ones_like(u)
@@ -717,7 +664,6 @@ def _precompute_policy_coeffs(
             u_x = torch.autograd.grad(u, x_g, grad_outputs=torch.ones_like(u), create_graph=False)[0]
         u_x = u_x.detach()
 
-    grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
     v_fb = mu + torch.matmul(grad_raw, env.C_train_raw_t.T)
     pi = _solve_qp_long_only_budget_full(
         env.Sigma_train_t,
@@ -763,7 +709,6 @@ def _pinn_unconstrained_hamiltonian(
              = 0.5/gamma * a' Sigma^{-1} a,
     where a = mu(x) + C grad_raw. No policy or QP is computed here.
     """
-    grad_raw = torch.matmul(u_x, env.Lz_inv_t) if env.state_whiten_enabled else u_x
     a_vec = env.mu_batch(x) + torch.matmul(grad_raw, env.C_train_raw_t.T)
     rhs = a_vec.T.contiguous()
     try:
@@ -850,27 +795,18 @@ def _policy_evaluation(
         optimizer.zero_grad()
         tau = train_coeff.tau.detach().clone().requires_grad_(True)
         x = train_coeff.x.detach().clone().requires_grad_(True)
-        mode = str(getattr(env, 'ansatz_mode', 'ansatz_log_transform')).lower()
-        if mode in {'ansatz_log_transform', 'ansatz_normalization_log_transform'}:
-            u_pred, u_tau, u_x = _u_derivs(model_u, tau, x, create_graph=True)
-            drift_u = _drift_term(env, x, u_x)
-            diff_u = _diffusion_term(env, x, u_x, create_graph=True)
-            quad = 0.5 * torch.sum(u_x * torch.matmul(u_x, env.Q_t.T), dim=1, keepdim=True)
-            if str(training_mode).lower() == 'pinn':
-                ham = _pinn_unconstrained_hamiltonian(env, x, u_x)
-                r = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
-                rhs_u = drift_u + diff_u + quad + (1.0 - env.gamma) * (r + ham)
-            else:
-                bterm_u = torch.sum(train_coeff.Bcoef * u_x, dim=1, keepdim=True)
-                rhs_u = drift_u + diff_u + quad + train_coeff.A + bterm_u
-            res = u_tau - rhs_u
+        u_pred, u_tau, u_x = _u_derivs(model_u, tau, x, create_graph=True)
+        drift_u = _drift_term(env, x, u_x)
+        diff_u = _diffusion_term(env, x, u_x, create_graph=True)
+        quad = 0.5 * torch.sum(u_x * torch.matmul(u_x, env.Q_t.T), dim=1, keepdim=True)
+        if str(training_mode).lower() == 'pinn':
+            ham = _pinn_unconstrained_hamiltonian(env, x, u_x)
+            r = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
+            rhs_u = drift_u + diff_u + quad + (1.0 - env.gamma) * (r + ham)
         else:
-            _, g, g_tau, g_x = _g_and_derivs(model_u, tau, x, create_graph=True)
-            drift = _drift_term(env, x, g_x)
-            diff = _diffusion_term(env, x, g_x, create_graph=True)
-            bterm = torch.sum(train_coeff.Bcoef * g_x, dim=1, keepdim=True)
-            rhs = drift + diff + train_coeff.A * g + bterm
-            res = g_tau - rhs
+            bterm_u = torch.sum(train_coeff.Bcoef * u_x, dim=1, keepdim=True)
+            rhs_u = drift_u + diff_u + quad + train_coeff.A + bterm_u
+        res = u_tau - rhs_u
         loss_pde = torch.mean(res * res)
         xb_g = train_xb.detach().clone().requires_grad_(True)
         u_bc = model_u(train_taub, xb_g)
@@ -886,26 +822,18 @@ def _policy_evaluation(
         with torch.enable_grad():
             tau_v = val_coeff.tau.detach().clone().requires_grad_(True)
             x_v = val_coeff.x.detach().clone().requires_grad_(True)
-            if mode in {'ansatz_log_transform', 'ansatz_normalization_log_transform'}:
-                u_v, u_tau_v, u_x_v = _u_derivs(model_u, tau_v, x_v, create_graph=False)
-                drift_v = _drift_term(env, x_v, u_x_v)
-                diff_v = _diffusion_term(env, x_v, u_x_v, create_graph=False)
-                quad_v = 0.5 * torch.sum(u_x_v * torch.matmul(u_x_v, env.Q_t.T), dim=1, keepdim=True)
-                if str(training_mode).lower() == 'pinn':
-                    ham_v = _pinn_unconstrained_hamiltonian(env, x_v, u_x_v)
-                    r_v = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
-                    rhs_v = drift_v + diff_v + quad_v + (1.0 - env.gamma) * (r_v + ham_v)
-                else:
-                    bterm_v = torch.sum(val_coeff.Bcoef * u_x_v, dim=1, keepdim=True)
-                    rhs_v = drift_v + diff_v + quad_v + val_coeff.A + bterm_v
-                res_v = u_tau_v - rhs_v
+            u_v, u_tau_v, u_x_v = _u_derivs(model_u, tau_v, x_v, create_graph=False)
+            drift_v = _drift_term(env, x_v, u_x_v)
+            diff_v = _diffusion_term(env, x_v, u_x_v, create_graph=False)
+            quad_v = 0.5 * torch.sum(u_x_v * torch.matmul(u_x_v, env.Q_t.T), dim=1, keepdim=True)
+            if str(training_mode).lower() == 'pinn':
+                ham_v = _pinn_unconstrained_hamiltonian(env, x_v, u_x_v)
+                r_v = float(getattr(env, 'r', getattr(env, 'risk_premium_r', 0.0)))
+                rhs_v = drift_v + diff_v + quad_v + (1.0 - env.gamma) * (r_v + ham_v)
             else:
-                _, g_v, g_tau_v, g_x_v = _g_and_derivs(model_u, tau_v, x_v, create_graph=False)
-                drift_v = _drift_term(env, x_v, g_x_v)
-                diff_v = _diffusion_term(env, x_v, g_x_v, create_graph=False)
-                bterm_v = torch.sum(val_coeff.Bcoef * g_x_v, dim=1, keepdim=True)
-                rhs_v = drift_v + diff_v + val_coeff.A * g_v + bterm_v
-                res_v = g_tau_v - rhs_v
+                bterm_v = torch.sum(val_coeff.Bcoef * u_x_v, dim=1, keepdim=True)
+                rhs_v = drift_v + diff_v + quad_v + val_coeff.A + bterm_v
+            res_v = u_tau_v - rhs_v
             val_pde = torch.mean(res_v * res_v)
             xb_v = val_xb.detach().clone().requires_grad_(True)
             u_bc_v = model_u(val_taub, xb_v)
@@ -942,29 +870,6 @@ def _policy_evaluation(
         model_u.load_state_dict(best_state)
     return hist, best_val
 
-
-# def _select_training_covariance(
-#     *,
-#     cfg: Any,
-#     cov_model: Any,
-#     cross_est: CrossCovarianceEstimate,
-#     state_train: pd.DataFrame,
-#     factor_train: pd.DataFrame,
-#     loadings: pd.DataFrame,
-#     residual_var: pd.Series,
-# ) -> np.ndarray:
-#     mode = str(cfg.pipinn.covariance_train_mode)
-#     if mode == 'cross_resid':
-#         return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
-#     if len(state_train) <= 0:
-#         return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
-#     state_row = state_train.iloc[-1]
-#     latest_factor_return = factor_train.iloc[-1] if len(factor_train) > 0 else pd.Series(dtype=float)
-#     try:
-#         cov_fc = cov_model.predict(state_row, latest_factor_return, loadings, residual_var)
-#         return _symmetrize_psd(np.asarray(cov_fc.asset_cov, dtype=float), floor=1.0e-10)
-#     except Exception:
-#         return _symmetrize_psd(np.asarray(cross_est.return_resid_cov, dtype=float), floor=1.0e-10)
 
 def _select_training_covariance(
     *,
@@ -1100,16 +1005,10 @@ def train_pipinn_policy(
     best_state = None
     all_hist: list[dict[str, float]] = []
     training_mode_norm = str(training_mode).lower()
-    if training_mode_norm == 'pinn':
-        if env.policy_output_mode != 'foc_clip':
-            raise ValueError(
-                "training_mode='pinn' requires pipinn.policy_output_mode='foc_clip'."
-            )
-        if env.ansatz_mode not in {'ansatz_log_transform', 'ansatz_normalization_log_transform'}:
-            raise ValueError(
-                "training_mode='pinn' requires a log-transform ansatz "
-                "('ansatz_log_transform' or 'ansatz_normalization_log_transform')."
-            )
+    if training_mode_norm == 'pinn' and env.policy_output_mode != 'foc_clip':
+        raise ValueError(
+            "training_mode='pinn' requires pipinn.policy_output_mode='foc_clip'."
+        )
 
     # warm-start policy: only PI-PINN uses a frozen policy network between outer iterations.
     if training_mode_norm != 'pinn' and warm_start_enabled and bool(getattr(cfg.pipinn, 'warm_start_policy', True)):

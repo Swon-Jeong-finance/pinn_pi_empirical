@@ -629,7 +629,6 @@ def _write_benchmark_notes(
     benchmark_cross_mode: str,
     market_source: str,
     backend: str = 'ppgdpo',
-    pipinn_ansatz_mode: str | None = None,
     pipinn_policy_output_mode: str | None = None,
 ) -> Path:
     benchmark_roles = {
@@ -675,7 +674,6 @@ def _write_benchmark_notes(
         ],
     }
     if backend_norm in {'pipinn', 'pinn'}:
-        payload['pipinn_ansatz_mode'] = str(pipinn_ansatz_mode or 'ansatz_log_transform')
         payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or ('foc_clip' if backend_norm == 'pinn' else 'pure_qp'))
         if backend_norm == 'pinn':
             payload['notes'].append(
@@ -1210,7 +1208,6 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         benchmark_cross_mode=benchmark_cross_mode,
         market_source=market_source,
         backend=backend,
-        pipinn_ansatz_mode=str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
         pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
     )
     

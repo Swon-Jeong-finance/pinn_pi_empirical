@@ -187,7 +187,6 @@ class SelectionLitePPGDPOConfig:
     pipinn_width: int = 96
     pipinn_depth: int = 4
     pipinn_covariance_train_mode: str = 'dcc_current'
-    pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform'
     pipinn_policy_output_mode: str = 'pure_qp'
     pipinn_qp_solver_iters: int = 300
     pipinn_qp_solver_tol: float = 1.0e-10
@@ -1078,7 +1077,6 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             width=int(lite_cfg.pipinn_width),
             depth=int(lite_cfg.pipinn_depth),
             covariance_train_mode=str(lite_cfg.pipinn_covariance_train_mode),
-            ansatz_mode=str(lite_cfg.pipinn_ansatz_mode),
             policy_output_mode=str(lite_cfg.pipinn_policy_output_mode),
             qp_solver_iters=int(lite_cfg.pipinn_qp_solver_iters),
             qp_solver_tol=float(lite_cfg.pipinn_qp_solver_tol),
@@ -1119,7 +1117,6 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'width': int(lite_cfg.pipinn_width),
         'depth': int(lite_cfg.pipinn_depth),
         'covariance_train_mode': str(lite_cfg.pipinn_covariance_train_mode),
-        'ansatz_mode': str(lite_cfg.pipinn_ansatz_mode),
         'policy_output_mode': str(lite_cfg.pipinn_policy_output_mode),
         'qp_solver_iters': int(lite_cfg.pipinn_qp_solver_iters),
         'qp_solver_tol': float(lite_cfg.pipinn_qp_solver_tol),
@@ -1639,13 +1636,6 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
             raise ValueError(
                 "optimizer_backend='pinn' requires pipinn_policy_output_mode='foc_clip'."
             )
-        if str(lite_cfg.pipinn_ansatz_mode).lower() not in {
-            'ansatz_log_transform',
-            'ansatz_normalization_log_transform',
-        }:
-            raise ValueError(
-                "optimizer_backend='pinn' requires a log-transform ansatz."
-            )
     if hasattr(out, 'pipinn'):
         out.pipinn.device = str(lite_cfg.pipinn_device)
         out.pipinn.dtype = str(lite_cfg.pipinn_dtype)
@@ -1670,7 +1660,6 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.width = int(lite_cfg.pipinn_width)
         out.pipinn.depth = int(lite_cfg.pipinn_depth)
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
-        out.pipinn.ansatz_mode = str(lite_cfg.pipinn_ansatz_mode)
         out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
         out.pipinn.qp_solver_iters = int(lite_cfg.pipinn_qp_solver_iters)
         out.pipinn.qp_solver_tol = float(lite_cfg.pipinn_qp_solver_tol)
@@ -2107,7 +2096,7 @@ def native_select_factor_suite(
     risky_cap: float = 1.0,
     cash_floor: float = 0.0,
     ppgdpo_lite_covariance_mode: str = 'full',
-    selection_eval_mode: str = 'projection',
+    selection_eval_mode: str | None = None,
     selection_optimizer_backend: str = 'ppgdpo',
     pipinn_device: str = 'auto',
     pipinn_dtype: str = 'float64',
@@ -2132,8 +2121,7 @@ def native_select_factor_suite(
     pipinn_width: int = 96,
     pipinn_depth: int = 4,
     pipinn_covariance_train_mode: str = 'dcc_current',
-    pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform',
-    pipinn_policy_output_mode: str = 'pure_qp',
+    pipinn_policy_output_mode: str | None = None,
     pipinn_qp_solver_iters: int = 300,
     pipinn_qp_solver_tol: float = 1.0e-10,
     pipinn_qp_solver_step_scale: float = 1.1,
@@ -2224,9 +2212,18 @@ def native_select_factor_suite(
     ]
 
     backend_norm = str(selection_optimizer_backend).strip().lower()
+    # Auto-resolve mode defaults based on backend when the caller did not specify one.
+    # This keeps backend ↔ policy-extraction coupling implicit:
+    #   - pinn  → foc_clip (closed-form FOC + long-only/risky-cap clip)
+    #   - other → pure_qp  (long-only budget QP)
+    # An explicitly-passed value is left untouched and will hit the validation block below
+    # if it is incompatible with the chosen backend.
+    if selection_eval_mode is None:
+        selection_eval_mode = 'foc_clip' if backend_norm == 'pinn' else 'pure_qp'
+    if pipinn_policy_output_mode is None:
+        pipinn_policy_output_mode = 'foc_clip' if backend_norm == 'pinn' else 'pure_qp'
     selection_eval_mode_norm = str(selection_eval_mode).strip().lower()
     pipinn_policy_output_mode_norm = str(pipinn_policy_output_mode).strip().lower()
-    pipinn_ansatz_mode_norm = str(pipinn_ansatz_mode).strip().lower()
     if selection_eval_mode_norm not in {'projection', 'pure_qp', 'foc_clip'}:
         raise ValueError(
             "selection_eval_mode must be one of 'projection', 'pure_qp', or 'foc_clip'."
@@ -2243,10 +2240,6 @@ def native_select_factor_suite(
         if pipinn_policy_output_mode_norm != 'foc_clip':
             raise ValueError(
                 "selection_optimizer_backend='pinn' requires --pipinn-policy-output-mode foc_clip."
-            )
-        if pipinn_ansatz_mode_norm not in {'ansatz_log_transform', 'ansatz_normalization_log_transform'}:
-            raise ValueError(
-                "selection_optimizer_backend='pinn' requires a log-transform PINN ansatz."
             )
 
     lite_cfg = SelectionLitePPGDPOConfig(
@@ -2284,7 +2277,6 @@ def native_select_factor_suite(
         pipinn_width=int(pipinn_width),
         pipinn_depth=int(pipinn_depth),
         pipinn_covariance_train_mode=str(pipinn_covariance_train_mode),
-        pipinn_ansatz_mode=pipinn_ansatz_mode_norm,
         pipinn_policy_output_mode=pipinn_policy_output_mode_norm,
         pipinn_qp_solver_iters=int(pipinn_qp_solver_iters),
         pipinn_qp_solver_tol=float(pipinn_qp_solver_tol),
