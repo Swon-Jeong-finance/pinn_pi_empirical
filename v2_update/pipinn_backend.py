@@ -328,20 +328,18 @@ class PIPINNEnvFromPPGDPO:
         self.transition_matrix = coef[1:, :].T.astype(float)
         self.drift_intercept = self.transition_intercept.copy()
         self.drift_matrix = self.transition_matrix - np.eye(self.n_states, dtype=float)
-        self.ansatz_mode = str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')).lower()
         self.policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')).lower()
         self.qp_solver_iters = int(getattr(cfg.pipinn, 'qp_solver_iters', 300) or 300)
         self.qp_solver_tol = float(getattr(cfg.pipinn, 'qp_solver_tol', 1.0e-10) or 1.0e-10)
         self.qp_solver_step_scale = float(getattr(cfg.pipinn, 'qp_solver_step_scale', 1.1) or 1.1)
-        self.state_whiten_enabled = self.ansatz_mode in {'ansatz_normalization', 'ansatz_normalization_log_transform'}
         ret_source_order = list(cross_est.cross.index)
         state_source_order = list(cross_est.cross.columns)
         asset_perm = [ret_source_order.index(asset) for asset in self.asset_columns]
         state_perm = [state_source_order.index(state) for state in self.state_columns]
         q_current = np.asarray(cross_est.current_state_innov_cov(), dtype=float)
         c_current = np.asarray(cross_est.current_cross(), dtype=float)
-        self.Q_raw = _symmetrize_psd(np.asarray(q_current[np.ix_(state_perm, state_perm)], dtype=float), floor=1.0e-10)
-        self.C_train_raw = np.asarray(c_current[np.ix_(asset_perm, state_perm)], dtype=float)
+        self.Q = _symmetrize_psd(np.asarray(q_current[np.ix_(state_perm, state_perm)], dtype=float), floor=1.0e-10)
+        self.C_train = np.asarray(c_current[np.ix_(asset_perm, state_perm)], dtype=float)
         self.Sigma_train = _symmetrize_psd(np.asarray(sigma_train, dtype=float), floor=1.0e-10)
         states_for_domain = states_t
 

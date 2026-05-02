@@ -214,7 +214,6 @@ class Config(BaseModel):
     def _validate_backend_policy_consistency(self):
         backend = str(self.optimizer_backend).lower()
         mode = str(self.pipinn.policy_output_mode).lower()
-        ansatz = str(self.pipinn.ansatz_mode).lower()
         if backend == 'pinn':
             if mode != 'foc_clip':
                 raise ValueError(
