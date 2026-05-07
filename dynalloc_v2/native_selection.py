@@ -48,6 +48,51 @@ from .utils import certainty_equivalent_annual, ensure_dir, sharpe_ratio
 SELECTION_REFERENCE_BENCHMARKS: tuple[str, ...] = ('equal_weight', 'min_variance', 'risk_parity')
 
 
+def _strategy_label_map_for_backend(backend: str) -> dict[str, str]:
+    out = {'myopic': 'predictive_static', 'policy': 'pgdpo'}
+    backend_norm = str(backend).lower()
+    if backend_norm == 'pinn':
+        out.update({
+            'pinn': 'ppgdpo',
+            'pinn_zero': 'ppgdpo_zero',
+            'pinn_regime_gated': 'ppgdpo_regime_gated',
+        })
+    elif backend_norm == 'pipinn':
+        out.update({
+            'pipinn': 'ppgdpo',
+            'pipinn_zero': 'ppgdpo_zero',
+            'pipinn_regime_gated': 'ppgdpo_regime_gated',
+        })
+    else:
+        out.update({
+            'ppgdpo': 'ppgdpo',
+            'ppgdpo_zero': 'ppgdpo_zero',
+            'ppgdpo_regime_gated': 'ppgdpo_regime_gated',
+        })
+    return out
+
+
+def _comparison_benchmark_notes_for_backend(backend: str) -> dict[str, Any]:
+    backend_norm = str(backend).lower()
+    if backend_norm == 'pinn':
+        variants = ['pinn', 'pinn_zero', 'pinn_regime_gated']
+        method_note = 'traditional PINN value-gradient FOC policy with long-only/risky-cap clipping'
+    elif backend_norm == 'pipinn':
+        variants = ['pipinn', 'pipinn_zero', 'pipinn_regime_gated']
+        method_note = 'PI-PINN value-gradient policy output'
+    else:
+        variants = ['ppgdpo', 'ppgdpo_zero', 'ppgdpo_regime_gated']
+        method_note = 'Pontryagin projection policy output'
+    return {
+        'predictive_static': 'reference-only, not a primary benchmark',
+        'pgdpo': 'warmup direct policy ablation',
+        'ppgdpo_variants': variants,
+        'dynamic_policy_note': method_note,
+        'external_benchmarks': list(SELECTION_REFERENCE_BENCHMARKS),
+    }
+
+
+
 @dataclass
 class NativeBaseBundleArtifacts:
     out_dir: Path
@@ -142,7 +187,7 @@ class SelectionLitePPGDPOConfig:
     pipinn_width: int = 96
     pipinn_depth: int = 4
     pipinn_covariance_train_mode: str = 'dcc_current'
-    pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform'
+    pipinn_pde_form: str = 'log_g'
     pipinn_policy_output_mode: str = 'pure_qp'
     pipinn_qp_solver_iters: int = 300
     pipinn_qp_solver_tol: float = 1.0e-10
@@ -1033,7 +1078,7 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             width=int(lite_cfg.pipinn_width),
             depth=int(lite_cfg.pipinn_depth),
             covariance_train_mode=str(lite_cfg.pipinn_covariance_train_mode),
-            ansatz_mode=str(lite_cfg.pipinn_ansatz_mode),
+            pde_form=str(lite_cfg.pipinn_pde_form),
             policy_output_mode=str(lite_cfg.pipinn_policy_output_mode),
             qp_solver_iters=int(lite_cfg.pipinn_qp_solver_iters),
             qp_solver_tol=float(lite_cfg.pipinn_qp_solver_tol),
@@ -1074,7 +1119,7 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'width': int(lite_cfg.pipinn_width),
         'depth': int(lite_cfg.pipinn_depth),
         'covariance_train_mode': str(lite_cfg.pipinn_covariance_train_mode),
-        'ansatz_mode': str(lite_cfg.pipinn_ansatz_mode),
+        'pde_form': str(lite_cfg.pipinn_pde_form),
         'policy_output_mode': str(lite_cfg.pipinn_policy_output_mode),
         'qp_solver_iters': int(lite_cfg.pipinn_qp_solver_iters),
         'qp_solver_tol': float(lite_cfg.pipinn_qp_solver_tol),
@@ -1160,8 +1205,11 @@ def _evaluate_ppgdpo_lite_candidate_block(
     cov_loglik_scores: list[float] = []
     prev_mu_for_cov_update: np.ndarray | None = None
     eval_mode = str(lite_cfg.selection_eval_mode).lower()
-    if eval_mode not in {'projection', 'pure_qp'}:
-        raise ValueError(f"Unsupported selection_eval_mode={lite_cfg.selection_eval_mode!r}; expected 'projection' or 'pure_qp'")
+    if eval_mode not in {'projection', 'pure_qp', 'foc_clip'}:
+        raise ValueError(
+            f"Unsupported selection_eval_mode={lite_cfg.selection_eval_mode!r}; "
+            "expected 'projection', 'pure_qp', or 'foc_clip'"
+        )
     cross_arr = cross_est.cross.to_numpy(dtype=float)
     zero_arr = np.zeros_like(cross_arr)
 
@@ -1184,10 +1232,10 @@ def _evaluate_ppgdpo_lite_candidate_block(
             steps=max(100, lite_cfg.pgd_steps),
             step_size=lite_cfg.step_size,
         )
-        if eval_mode == 'pure_qp':
+        if eval_mode in {'pure_qp', 'foc_clip'}:
             if not hasattr(trainer, 'policy_weights_with_debug'):
                 raise RuntimeError(
-                    f"selection_eval_mode='pure_qp' requires trainer.policy_weights_with_debug; "
+                    f"selection_eval_mode={eval_mode!r} requires trainer.policy_weights_with_debug; "
                     f"optimizer_backend={lite_cfg.optimizer_backend!r} does not provide it"
                 )
             ppgdpo_est_w, _ = trainer.policy_weights_with_debug(
@@ -1586,6 +1634,11 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
     out.mean_model.kind = str(lite_cfg.mean_model_kind)
     out.comparison.cross_modes = _comparison_cross_modes_for_covariance_label(str(lite_cfg.covariance_label))
     out.comparison.transaction_cost_bps = float(lite_cfg.transaction_cost_bps)
+    if str(lite_cfg.optimizer_backend).lower() == 'pinn':
+        if str(lite_cfg.pipinn_policy_output_mode).lower() != 'foc_clip':
+            raise ValueError(
+                "optimizer_backend='pinn' requires pipinn_policy_output_mode='foc_clip'."
+            )
     if hasattr(out, 'pipinn'):
         out.pipinn.device = str(lite_cfg.pipinn_device)
         out.pipinn.dtype = str(lite_cfg.pipinn_dtype)
@@ -1610,7 +1663,7 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.width = int(lite_cfg.pipinn_width)
         out.pipinn.depth = int(lite_cfg.pipinn_depth)
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
-        out.pipinn.ansatz_mode = str(lite_cfg.pipinn_ansatz_mode)
+        out.pipinn.pde_form = str(lite_cfg.pipinn_pde_form)
         out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
         out.pipinn.qp_solver_iters = int(lite_cfg.pipinn_qp_solver_iters)
         out.pipinn.qp_solver_tol = float(lite_cfg.pipinn_qp_solver_tol)
@@ -1661,12 +1714,15 @@ def _summary_scalar(summary: pd.DataFrame, *, strategy: str, cross_mode: str, co
         'predictive_static': ['predictive_static', 'myopic'],
         'policy': ['policy', 'pgdpo'],
         'pgdpo': ['pgdpo', 'policy'],
-        'ppgdpo': ['ppgdpo', 'pipinn'],
-        'ppgdpo_zero': ['ppgdpo_zero', 'pipinn_zero'],
-        'ppgdpo_regime_gated': ['ppgdpo_regime_gated', 'pipinn_regime_gated'],
+        'ppgdpo': ['ppgdpo', 'pipinn', 'pinn'],
+        'ppgdpo_zero': ['ppgdpo_zero', 'pipinn_zero', 'pinn_zero'],
+        'ppgdpo_regime_gated': ['ppgdpo_regime_gated', 'pipinn_regime_gated', 'pinn_regime_gated'],
         'pipinn': ['pipinn', 'ppgdpo'],
         'pipinn_zero': ['pipinn_zero', 'ppgdpo_zero'],
         'pipinn_regime_gated': ['pipinn_regime_gated', 'ppgdpo_regime_gated'],
+        'pinn': ['pinn', 'ppgdpo'],
+        'pinn_zero': ['pinn_zero', 'ppgdpo_zero'],
+        'pinn_regime_gated': ['pinn_regime_gated', 'ppgdpo_regime_gated'],
     }
     cross_aliases = {
         'estimated': ['estimated', 'reference'],
@@ -2044,7 +2100,7 @@ def native_select_factor_suite(
     risky_cap: float = 1.0,
     cash_floor: float = 0.0,
     ppgdpo_lite_covariance_mode: str = 'full',
-    selection_eval_mode: str = 'projection',
+    selection_eval_mode: str | None = None,
     selection_optimizer_backend: str = 'ppgdpo',
     pipinn_device: str = 'auto',
     pipinn_dtype: str = 'float64',
@@ -2069,8 +2125,8 @@ def native_select_factor_suite(
     pipinn_width: int = 96,
     pipinn_depth: int = 4,
     pipinn_covariance_train_mode: str = 'dcc_current',
-    pipinn_ansatz_mode: str = 'ansatz_normalization_log_transform',
-    pipinn_policy_output_mode: str = 'pure_qp',
+    pipinn_pde_form: str = 'log_g',
+    pipinn_policy_output_mode: str | None = None,
     pipinn_qp_solver_iters: int = 300,
     pipinn_qp_solver_tol: float = 1.0e-10,
     pipinn_qp_solver_step_scale: float = 1.1,
@@ -2160,15 +2216,51 @@ def native_select_factor_suite(
         for block in blocks
     ]
 
+    backend_norm = str(selection_optimizer_backend).strip().lower()
+    # Auto-resolve mode defaults based on backend when the caller did not specify one.
+    # This keeps backend ↔ policy-extraction coupling implicit:
+    #   - pinn  → foc_clip (closed-form FOC + long-only/risky-cap clip)
+    #   - other → pure_qp  (long-only budget QP)
+    # An explicitly-passed value is left untouched and will hit the validation block below
+    # if it is incompatible with the chosen backend.
+    if selection_eval_mode is None:
+        selection_eval_mode = 'foc_clip' if backend_norm == 'pinn' else 'pure_qp'
+    if pipinn_policy_output_mode is None:
+        pipinn_policy_output_mode = 'foc_clip' if backend_norm == 'pinn' else 'pure_qp'
+    selection_eval_mode_norm = str(selection_eval_mode).strip().lower()
+    pipinn_policy_output_mode_norm = str(pipinn_policy_output_mode).strip().lower()
+    pipinn_pde_form_norm = str(pipinn_pde_form).strip().lower()
+    if pipinn_pde_form_norm not in {'log_g', 'g'}:
+        raise ValueError(
+            "pipinn_pde_form must be one of 'log_g', 'g'."
+        )
+    if selection_eval_mode_norm not in {'projection', 'pure_qp', 'foc_clip'}:
+        raise ValueError(
+            "selection_eval_mode must be one of 'projection', 'pure_qp', or 'foc_clip'."
+        )
+    if pipinn_policy_output_mode_norm not in {'projection', 'pure_qp', 'foc_clip'}:
+        raise ValueError(
+            "pipinn_policy_output_mode must be one of 'projection', 'pure_qp', or 'foc_clip'."
+        )
+    if backend_norm == 'pinn':
+        if selection_eval_mode_norm != 'foc_clip':
+            raise ValueError(
+                "selection_optimizer_backend='pinn' requires --selection-eval-mode foc_clip."
+            )
+        if pipinn_policy_output_mode_norm != 'foc_clip':
+            raise ValueError(
+                "selection_optimizer_backend='pinn' requires --pipinn-policy-output-mode foc_clip."
+            )
+
     lite_cfg = SelectionLitePPGDPOConfig(
-        optimizer_backend=str(selection_optimizer_backend),
+        optimizer_backend=backend_norm,
         rerank_top_n=int(max(0, rerank_top_n)),
         device=str(selection_device),
         epochs=int(ppgdpo_lite_epochs),
         mc_rollouts=int(ppgdpo_lite_mc_rollouts),
         mc_sub_batch=int(ppgdpo_lite_mc_sub_batch),
         covariance_mode=str(ppgdpo_lite_covariance_mode),
-        selection_eval_mode=str(selection_eval_mode),
+        selection_eval_mode=selection_eval_mode_norm,
         transaction_cost_bps=float(selection_transaction_cost_bps),
         risky_cap=float(risky_cap),
         cash_floor=float(cash_floor),
@@ -2195,8 +2287,8 @@ def native_select_factor_suite(
         pipinn_width=int(pipinn_width),
         pipinn_depth=int(pipinn_depth),
         pipinn_covariance_train_mode=str(pipinn_covariance_train_mode),
-        pipinn_ansatz_mode=str(pipinn_ansatz_mode),
-        pipinn_policy_output_mode=str(pipinn_policy_output_mode),
+        pipinn_pde_form=pipinn_pde_form_norm,
+        pipinn_policy_output_mode=pipinn_policy_output_mode_norm,
         pipinn_qp_solver_iters=int(pipinn_qp_solver_iters),
         pipinn_qp_solver_tol=float(pipinn_qp_solver_tol),
         pipinn_qp_solver_step_scale=float(pipinn_qp_solver_step_scale),
@@ -2968,14 +3060,9 @@ def native_select_factor_suite(
         'selection_protocol_candidates': list(selection_protocol_candidates),
         'selection_protocol_semantics': 'warm_start_rolling_available_history',
         'selection_protocol_semantics_note': 'rolling protocols may start with the available pre-history and become full-window rolling once enough history accumulates',
-        'v55_strategy_label_map': {'myopic': 'predictive_static', 'policy': 'pgdpo'},
-        'strategy_label_map': {'myopic': 'predictive_static', 'policy': 'pgdpo'},
-        'comparison_benchmark_notes': {
-            'predictive_static': 'reference-only, not a primary benchmark',
-            'pgdpo': 'warmup direct policy ablation',
-            'ppgdpo_variants': ['ppgdpo', 'ppgdpo_zero', 'ppgdpo_regime_gated'],
-            'external_benchmarks': list(SELECTION_REFERENCE_BENCHMARKS),
-        },
+        'v55_strategy_label_map': _strategy_label_map_for_backend(lite_cfg.optimizer_backend),
+        'strategy_label_map': _strategy_label_map_for_backend(lite_cfg.optimizer_backend),
+        'comparison_benchmark_notes': _comparison_benchmark_notes_for_backend(lite_cfg.optimizer_backend),
         'stage1_top_k': int(len(stage1_selected_units)),
         'stage1_top_k_requested': None if stage1_top_k is None else int(stage1_top_k),
         'final_top_k_requested': int(final_top_k),
@@ -3062,14 +3149,9 @@ def native_select_factor_suite(
         'selection_score_mode': 'stage1_mean_first_spec_protocol_then_stage2_global_real_dynamic_policy' if diagnostic_units else 'stage1_mean_first_spec_protocol_only',
         'selection_protocol': 'stage1_spec_protocol_screen_then_stage2_global_protocol_model_selection' if diagnostic_units else 'stage1_spec_protocol_selection_only',
         'selection_protocol_candidates': list(selection_protocol_candidates),
-        'v55_strategy_label_map': {'myopic': 'predictive_static', 'policy': 'pgdpo'},
-        'strategy_label_map': {'myopic': 'predictive_static', 'policy': 'pgdpo'},
-        'comparison_benchmark_notes': {
-            'predictive_static': 'reference-only, not a primary benchmark',
-            'pgdpo': 'warmup direct policy ablation',
-            'ppgdpo_variants': ['ppgdpo', 'ppgdpo_zero', 'ppgdpo_regime_gated'],
-            'external_benchmarks': list(SELECTION_REFERENCE_BENCHMARKS),
-        },
+        'v55_strategy_label_map': _strategy_label_map_for_backend(lite_cfg.optimizer_backend),
+        'strategy_label_map': _strategy_label_map_for_backend(lite_cfg.optimizer_backend),
+        'comparison_benchmark_notes': _comparison_benchmark_notes_for_backend(lite_cfg.optimizer_backend),
         'stage1_engine': PORTED_STAGE1_ENGINE,
         'stage1_external_audit_enabled': bool(legacy_stage1_modules is not None),
         'stage1_external_audit_v1_root': str(legacy_stage1_root) if legacy_stage1_root is not None else None,

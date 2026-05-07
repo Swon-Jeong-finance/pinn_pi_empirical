@@ -114,6 +114,7 @@ def _default_pipinn_payload() -> dict[str, Any]:
         'width': 96,
         'depth': 4,
         'covariance_train_mode': 'dcc_current',
+        'pde_form': 'log_g',
         'x_domain_quantile_low': 0.001,
         'x_domain_quantile_high': 0.999,
         'x_domain_buffer': 0.20,
@@ -121,6 +122,13 @@ def _default_pipinn_payload() -> dict[str, Any]:
         'save_training_logs': True,
         'show_progress': False,
         'show_epoch_progress': False,
+        'policy_output_mode': 'pure_qp',
+        'qp_solver_iters': 300,
+        'qp_solver_tol': 1.0e-10,
+        'qp_solver_step_scale': 1.1,
+        'eval_tau_mode': 'maturity_constant',
+        'eval_tau_maturity_years': 1,
+        'eval_tau_reset_on_refit': False,
     }
 
 
@@ -149,11 +157,9 @@ def _build_v2_config_dict(
     pipinn_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backend = str(optimizer_backend).strip().lower()
-    if backend == 'pinn':
-        backend = 'pipinn'
-    if backend not in {'ppgdpo', 'pipinn'}:
+    if backend not in {'ppgdpo', 'pipinn', 'pinn'}:
         raise ValueError(f'Unsupported optimizer_backend={optimizer_backend!r}')
-    run_tag = 'pipinn' if backend == 'pipinn' else 'ppgdpo'
+    run_tag = backend
     run_output = out_dir / 'outputs' / f'{config_stem}_v2_apt_{run_tag}'
     payload = {
         'optimizer_backend': backend,
@@ -247,9 +253,17 @@ def _build_v2_config_dict(
             'transaction_cost_bps': float(comparison_transaction_cost_bps),
         },
     }
-    if backend == 'pipinn' or pipinn_payload is not None:
+    if backend in {'pipinn', 'pinn'} or pipinn_payload is not None:
         merged_pipinn = _default_pipinn_payload()
         if pipinn_payload:
             merged_pipinn.update({k: v for k, v in dict(pipinn_payload).items() if v is not None})
+        if backend == 'pinn':
+            raw_pipinn_payload = dict(pipinn_payload or {})
+            if raw_pipinn_payload.get('policy_output_mode') is None:
+                merged_pipinn['policy_output_mode'] = 'foc_clip'
+            if str(merged_pipinn.get('policy_output_mode')).lower() != 'foc_clip':
+                raise ValueError(
+                    "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'."
+                )
         payload['pipinn'] = merged_pipinn
     return payload

@@ -186,7 +186,7 @@ def cmd_select_native_suite(args):
         pipinn_width=args.pipinn_width,
         pipinn_depth=args.pipinn_depth,
         pipinn_covariance_train_mode=args.pipinn_covariance_train_mode,
-        pipinn_ansatz_mode=args.pipinn_ansatz_mode,
+        pipinn_pde_form=args.pipinn_pde_form,
         pipinn_policy_output_mode=args.pipinn_policy_output_mode,
         pipinn_qp_solver_iters=args.pipinn_qp_solver_iters,
         pipinn_qp_solver_tol=args.pipinn_qp_solver_tol,
@@ -298,7 +298,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--ppgdpo-lite-mc-sub-batch', type=int, default=256)
     p_native.add_argument('--selection-transaction-cost-bps', type=float, default=0.0)
     p_native.add_argument('--ppgdpo-lite-covariance-mode', choices=['full', 'diag'], default='full')
-    p_native.add_argument('--selection-eval-mode', choices=['projection', 'pure_qp'], default='pure_qp')
+    p_native.add_argument(
+    '--selection-eval-mode',
+    choices=['projection', 'pure_qp', 'foc_clip'],
+    default=None,
+    help="Policy extraction at selection time. If unset, defaults to 'foc_clip' when backend='pinn', otherwise 'pure_qp'.",
+    )
     p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn'], default='pipinn')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
@@ -323,8 +328,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-width', type=int, default=128)
     p_native.add_argument('--pipinn-depth', type=int, default=2)
     p_native.add_argument('--pipinn-covariance-train-mode', choices=['dcc_current', 'cross_resid'], default='dcc_current')
-    p_native.add_argument('--pipinn-ansatz-mode',choices=['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'], default='ansatz_log_transform')
-    p_native.add_argument('--pipinn-policy-output-mode', choices=['projection', 'pure_qp'], default='pure_qp')
+    p_native.add_argument('--pipinn-pde-form', choices=['log_g', 'g'], default='g', help="HJB form to learn. 'log_g' (default) uses Hopf-Cole transform u=log(g). 'g' learns g directly.")
+    p_native.add_argument('--pipinn-policy-output-mode', choices=['projection', 'pure_qp', 'foc_clip'], default=None, help="PI-PINN/PINN trainer policy output mode. If unset, defaults to 'foc_clip' when backend='pinn', otherwise 'pure_qp'.",
+    )
     p_native.add_argument('--pipinn-qp-solver-iters', type=int, default=300)
     p_native.add_argument('--pipinn-qp-solver-tol', type=float, default=1.0e-10)
     p_native.add_argument('--pipinn-qp-solver-step-scale', type=float, default=1.1)

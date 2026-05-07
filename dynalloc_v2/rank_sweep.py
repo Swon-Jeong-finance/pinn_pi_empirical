@@ -86,6 +86,16 @@ def _run_single_rank_protocol(
     spec = str(entry['spec'])
     cfg_path = Path(entry['config_yaml'])
     payload = yaml.safe_load(cfg_path.read_text(encoding='utf-8')) or {}
+    entry_backend = str(
+        entry.get('selection_optimizer_backend')
+        or manifest.get('selection_optimizer_backend')
+        or ''
+    ).strip().lower()
+    if entry_backend in {'ppgdpo', 'pipinn', 'pinn'}:
+        payload['optimizer_backend'] = entry_backend
+    if entry_backend == 'pinn':
+        payload.setdefault('pipinn', {})
+        payload['pipinn']['policy_output_mode'] = 'foc_clip'
     base_cfg = Config.model_validate(payload)
     base_output_dir = Path(base_cfg.project.output_dir)
     rank_dir = Path(rank_root) / f'rank_{rank:03d}'

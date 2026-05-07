@@ -315,7 +315,7 @@ def _format_output_tag_value(value: Any) -> str:
 
 def _resolve_pipinn_output_dir(cfg: Config) -> Path:
     base_dir = Path(cfg.project.output_dir)
-    if _optimizer_backend(cfg) != 'pipinn':
+    if _optimizer_backend(cfg) not in {'pipinn', 'pinn'}:
         return base_dir
     if not bool(getattr(cfg.pipinn, 'auto_output_subdir', False)):
         return base_dir
@@ -540,11 +540,15 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
             return {
                 'strategy': f'{base}_traincov_diag',
                 'cross_mode': 'estimated',
-                'strategy_display': 'pipinn_traincov_diag',
+                'strategy_display': f'{base}_traincov_diag',
                 'strategy_legacy_label': 'pgdpo',
                 'comparison_role': 'method_diagnostic',
                 'benchmark_primary': False,
-                'benchmark_note': 'PI-PINN trainer-default projection with frozen train-window covariance and estimated cross',
+                'benchmark_note': (
+                    'PINN trainer-default FOC clipping policy with frozen train-window covariance and estimated cross'
+                    if backend == 'pinn'
+                    else 'PI-PINN trainer-default projection with frozen train-window covariance and estimated cross'
+                ),
                 'benchmark_source': '',
             }
         return {
@@ -561,10 +565,15 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
         if backend in {'pipinn', 'pinn'}:
             base = 'pinn' if backend == 'pinn' else 'pipinn'
             label = 'PINN' if backend == 'pinn' else 'PI-PINN'
+            method_note = (
+                'FOC-derived unconstrained policy with long-only/risky-cap clipping'
+                if backend == 'pinn'
+                else 'value-gradient pure-QP/projection policy'
+            )
             mapping = {
-                'estimated': (f'{base}', f'{base}', 'ppgdpo', f'{label} value-gradient projection with estimated cross'),
-                'zero': (f'{base}_zero', f'{base}_zero', 'ppgdpo_zero', f'{label} value-gradient projection with zero cross'),
-                'regime_gated': (f'{base}_regime_gated', f'{base}_regime_gated', 'ppgdpo_regime_gated', f'{label} value-gradient projection with regime-gated cross'),
+                'estimated': (f'{base}', f'{base}', 'ppgdpo', f'{label} {method_note} with estimated cross'),
+                'zero': (f'{base}_zero', f'{base}_zero', 'ppgdpo_zero', f'{label} {method_note} with zero cross'),
+                'regime_gated': (f'{base}_regime_gated', f'{base}_regime_gated', 'ppgdpo_regime_gated', f'{label} {method_note} with regime-gated cross'),
             }
             out_name, out_display, legacy_name, note = mapping.get(
                 cross_mode,
@@ -620,8 +629,8 @@ def _write_benchmark_notes(
     benchmark_cross_mode: str,
     market_source: str,
     backend: str = 'ppgdpo',
-    pipinn_ansatz_mode: str | None = None,
     pipinn_policy_output_mode: str | None = None,
+    pipinn_pde_form: str | None = None,
 ) -> Path:
     benchmark_roles = {
         'predictive_static': 'reference_only',
@@ -634,12 +643,14 @@ def _write_benchmark_notes(
         'myopic': 'predictive_static',
         'policy': 'pgdpo',
     }
-    if str(backend).lower() == 'pipinn':
+    backend_norm = str(backend).lower()
+    if backend_norm in {'pipinn', 'pinn'}:
+        base = 'pinn' if backend_norm == 'pinn' else 'pipinn'
         strategy_label_map.update({
-            'pipinn': 'ppgdpo',
-            'pipinn_zero': 'ppgdpo_zero',
-            'pipinn_regime_gated': 'ppgdpo_regime_gated',
-            'pipinn_traincov_diag': 'pgdpo',
+            base: 'ppgdpo',
+            f'{base}_zero': 'ppgdpo_zero',
+            f'{base}_regime_gated': 'ppgdpo_regime_gated',
+            f'{base}_traincov_diag': 'pgdpo',
         })
     else:
         strategy_label_map.update({
@@ -663,9 +674,13 @@ def _write_benchmark_notes(
             'ppgdpo / ppgdpo_zero / ppgdpo_regime_gated remain the main mechanism-comparison strategies',
         ],
     }
-    if str(backend).lower() == 'pipinn':
-        payload['pipinn_ansatz_mode'] = str(pipinn_ansatz_mode or 'ansatz_log_transform')
-        payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or 'pure_qp')
+    if backend_norm in {'pipinn', 'pinn'}:
+        payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or ('foc_clip' if backend_norm == 'pinn' else 'pure_qp'))
+        payload['pipinn_pde_form'] = str(pipinn_pde_form or 'log_g')
+        if backend_norm == 'pinn':
+            payload['notes'].append(
+                'pinn / pinn_zero / pinn_regime_gated use FOC-derived unconstrained policy followed by long-only/risky-cap clipping.'
+            )
     if 'market' in set(standard_benchmarks):
         payload['market_benchmark_source'] = market_source
     path = output_dir / 'benchmark_notes.yaml'
@@ -853,6 +868,11 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
     all_dates, eval_dates = _prepare_windows(cfg, returns)
 
     backend = _optimizer_backend(cfg)
+    pipinn_policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')).lower()
+    if backend == 'pinn' and pipinn_policy_output_mode != 'foc_clip':
+        raise ValueError(
+            "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'."
+        )
     emit_pipinn_frozen_traincov = _emit_pipinn_frozen_traincov_strategy(cfg)
     save_training_logs = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'save_training_logs', False))
     show_progress = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'show_progress', False))
@@ -1047,7 +1067,8 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             targets[('pgdpo', reference_cross_mode)] = pgdpo_w
             for cross_mode in cross_modes:
                 cross_mat = cross_lookup.get(str(cross_mode), cross_base)
-                if backend in {'pipinn', 'pinn'} and str(getattr(cfg.pipinn, 'policy_output_mode', 'projection')).lower() == 'pure_qp':
+                policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')).lower()
+                if backend in {'pipinn', 'pinn'} and policy_output_mode in {'pure_qp', 'foc_clip'}:
                     ppgdpo_w, proj_debug = trainer.policy_weights_with_debug(
                         state_row,
                         covariance=cov_eval,
@@ -1189,8 +1210,8 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         benchmark_cross_mode=benchmark_cross_mode,
         market_source=market_source,
         backend=backend,
-        pipinn_ansatz_mode=str(getattr(cfg.pipinn, 'ansatz_mode', 'ansatz_log_transform')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
         pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
+        pipinn_pde_form=str(getattr(cfg.pipinn, 'pde_form', 'log_g')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
     )
     
 

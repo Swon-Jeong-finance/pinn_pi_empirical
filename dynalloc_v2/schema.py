@@ -169,8 +169,10 @@ class PIPINNConfig(BaseModel):
     width: int = 96
     depth: int = 4
     covariance_train_mode: Literal['dcc_current', 'cross_resid'] = 'dcc_current'
-    ansatz_mode: Literal['ansatz_log_transform', 'ansatz_normalization', 'ansatz_normalization_log_transform'] = 'ansatz_normalization_log_transform'
-    policy_output_mode: Literal['projection', 'pure_qp'] = 'pure_qp'
+    # PDE form for the value function. 'log_g' learns u = log g (Hopf-Cole; current default).
+    # 'g' learns g (the reduced value function V = x^{1-γ}/(1-γ) · g) directly without log transform.
+    pde_form: Literal['log_g', 'g'] = 'log_g'
+    policy_output_mode: Literal['projection', 'pure_qp', 'foc_clip'] = 'pure_qp'
     qp_solver_iters: int = 300
     qp_solver_tol: float = 1.0e-10
     qp_solver_step_scale: float = 1.1
@@ -210,3 +212,16 @@ class Config(BaseModel):
     experiment: ExperimentConfig = Field(default_factory=ExperimentConfig)
     ppgdpo: PPGDPOConfig = Field(default_factory=PPGDPOConfig)
     pipinn: PIPINNConfig = Field(default_factory=PIPINNConfig)
+
+    @model_validator(mode='after')
+    def _validate_backend_policy_consistency(self):
+        backend = str(self.optimizer_backend).lower()
+        mode = str(self.pipinn.policy_output_mode).lower()
+        if backend == 'pinn':
+            if mode != 'foc_clip':
+                raise ValueError(
+                    "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'. "
+                    "Traditional PINN uses FOC-derived unconstrained policy plus clipping, "
+                    "not pure_qp/projection policy extraction."
+                )
+        return self
