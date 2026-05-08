@@ -195,8 +195,39 @@ class PIPINNConfig(BaseModel):
             raise ValueError('pipinn.eval_tau_maturity_years must be >= 1.')
         return self
 
+
+class FDMConfig(BaseModel):
+    value_form: Literal['g'] = 'g'
+    n_z1: int = 81
+    n_z2: int = 81
+    n_tau: int = 240
+    scheme: Literal['imex', 'imex_picard'] = 'imex'
+    boundary: Literal['neumann'] = 'neumann'
+    drift_scheme: Literal['upwind', 'central'] = 'upwind'
+    max_state_dim: int = 2
+    g_floor: float = 1.0e-10
+    enforce_positive: bool = True
+    picard_iters: int = 5
+    picard_tol: float = 1.0e-8
+    save_grid: bool = False
+    save_training_logs: bool = True
+
+    @model_validator(mode='after')
+    def _validate_fdm(self):
+        if int(self.n_z1) < 3:
+            raise ValueError('fdm.n_z1 must be >= 3.')
+        if int(self.n_z2) < 3:
+            raise ValueError('fdm.n_z2 must be >= 3.')
+        if int(self.n_tau) < 1:
+            raise ValueError('fdm.n_tau must be >= 1.')
+        if int(self.max_state_dim) < 1 or int(self.max_state_dim) > 2:
+            raise ValueError('fdm.max_state_dim must be 1 or 2.')
+        if float(self.g_floor) <= 0.0:
+            raise ValueError('fdm.g_floor must be positive.')
+        return self
+
 class Config(BaseModel):
-    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn'] = 'ppgdpo'
+    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn', 'fdm'] = 'ppgdpo'
     project: ProjectConfig
     data: DataConfig
     split: SplitConfig
@@ -209,16 +240,17 @@ class Config(BaseModel):
     experiment: ExperimentConfig = Field(default_factory=ExperimentConfig)
     ppgdpo: PPGDPOConfig = Field(default_factory=PPGDPOConfig)
     pipinn: PIPINNConfig = Field(default_factory=PIPINNConfig)
+    fdm: FDMConfig = Field(default_factory=FDMConfig)
 
     @model_validator(mode='after')
     def _validate_backend_policy_consistency(self):
         backend = str(self.optimizer_backend).lower()
         mode = str(self.pipinn.policy_output_mode).lower()
-        if backend == 'pinn':
+        if backend in {'pinn', 'fdm'}:
             if mode != 'foc_clip':
                 raise ValueError(
-                    "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'. "
-                    "Traditional PINN uses FOC-derived unconstrained policy plus clipping, "
+                    "optimizer_backend='pinn' or optimizer_backend='fdm' requires pipinn.policy_output_mode='foc_clip'. "
+                    "Traditional PINN/FDM uses FOC-derived unconstrained policy plus clipping, "
                     "not pure_qp/projection policy extraction."
                 )
         return self

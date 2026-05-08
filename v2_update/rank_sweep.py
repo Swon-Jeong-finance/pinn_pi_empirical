@@ -91,9 +91,9 @@ def _run_single_rank_protocol(
         or manifest.get('selection_optimizer_backend')
         or ''
     ).strip().lower()
-    if entry_backend in {'ppgdpo', 'pipinn', 'pinn'}:
+    if entry_backend in {'ppgdpo', 'pipinn', 'pinn', 'fdm'}:
         payload['optimizer_backend'] = entry_backend
-    if entry_backend == 'pinn':
+    if entry_backend in {'pinn', 'fdm'}:
         payload.setdefault('pipinn', {})
         payload['pipinn']['policy_output_mode'] = 'foc_clip'
     base_cfg = Config.model_validate(payload)
@@ -143,7 +143,12 @@ def _run_single_rank_protocol(
         'oos_protocol_requested': requested_protocol,
         'oos_protocol': effective_protocol,
         'output_dir': str(artifacts.output_dir),
-        'device': device_override or (cfg.pipinn.device if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() in {'pipinn', 'pinn'} else cfg.ppgdpo.device),
+        'device': (
+            'cpu'
+            if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() == 'fdm'
+            else device_override
+            or (cfg.pipinn.device if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() in {'pipinn', 'pinn'} else cfg.ppgdpo.device)
+        ),
         'optimizer_backend': str(getattr(cfg, 'optimizer_backend', 'ppgdpo')),
         'mc_rollouts': int(cfg.ppgdpo.mc_rollouts),
         'mc_sub_batch': int(cfg.ppgdpo.mc_sub_batch),

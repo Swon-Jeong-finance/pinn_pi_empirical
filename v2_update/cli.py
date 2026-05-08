@@ -197,6 +197,15 @@ def cmd_select_native_suite(args):
         pipinn_save_training_logs=bool(not args.disable_pipinn_save_training_logs),
         pipinn_show_progress=bool(args.pipinn_show_progress),
         pipinn_show_epoch_progress=bool(args.pipinn_show_epoch_progress),
+        fdm_n_z1=args.fdm_n_z1,
+        fdm_n_z2=args.fdm_n_z2,
+        fdm_n_tau=args.fdm_n_tau,
+        fdm_scheme=args.fdm_scheme,
+        fdm_boundary=args.fdm_boundary,
+        fdm_drift_scheme=args.fdm_drift_scheme,
+        fdm_g_floor=args.fdm_g_floor,
+        fdm_picard_iters=args.fdm_picard_iters,
+        fdm_picard_tol=args.fdm_picard_tol,
         rerank_covariance_models=args.rerank_covariance_models,
         select_rolling_oos_window=bool(not args.disable_rolling_oos_window_selection),
         rolling_oos_window_grid=args.rolling_oos_window_grid,
@@ -303,7 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     default=None,
     help="Policy extraction at selection time. If unset, defaults to 'foc_clip' when backend='pinn', otherwise 'pure_qp'.",
     )
-    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn'], default='pipinn')
+    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn', 'fdm'], default='pipinn')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
     p_native.add_argument('--pipinn-outer-iters', type=int, default=10)
@@ -343,6 +352,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--disable-pipinn-save-training-logs', action='store_true')
     p_native.add_argument('--pipinn-show-progress', action='store_true')
     p_native.add_argument('--pipinn-show-epoch-progress', action='store_true')
+    p_native.add_argument('--fdm-n-z1', type=int, default=81)
+    p_native.add_argument('--fdm-n-z2', type=int, default=81)
+    p_native.add_argument('--fdm-n-tau', type=int, default=240)
+    p_native.add_argument('--fdm-scheme', choices=['imex', 'imex_picard'], default='imex')
+    p_native.add_argument('--fdm-boundary', choices=['neumann'], default='neumann')
+    p_native.add_argument('--fdm-drift-scheme', choices=['upwind', 'central'], default='upwind')
+    p_native.add_argument('--fdm-g-floor', type=float, default=1.0e-10)
+    p_native.add_argument('--fdm-picard-iters', type=int, default=5)
+    p_native.add_argument('--fdm-picard-tol', type=float, default=1.0e-8)
     p_native.add_argument('--rerank-covariance-models', nargs='+', choices=['const', 'diag', 'dcc', 'adcc', 'regime_dcc'], default=['const', 'dcc', 'adcc', 'regime_dcc'])
     p_native.add_argument('--selection-protocols', nargs='+', default=None, help='Integrated stage1/stage2 protocol candidates. Example: rolling240m_annual. If omitted, the default is a fixed 20-year rolling protocol built from --rolling-oos-window-grid.')
     p_native.add_argument('--rolling-oos-window-grid', nargs='+', type=int, default=None, help='Integrated stage1/stage2 rolling annual window candidates in months. Default: 240. Warm-start semantics: early validation/OOS refits use the available history until the full window is reached.')
