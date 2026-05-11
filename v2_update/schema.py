@@ -169,6 +169,7 @@ class PIPINNConfig(BaseModel):
     width: int = 96
     depth: int = 4
     covariance_train_mode: Literal['dcc_current', 'cross_resid'] = 'dcc_current'
+    pde_form: Literal['log_g', 'g'] = 'g'
     policy_output_mode: Literal['projection', 'pure_qp', 'foc_clip'] = 'pure_qp'
     qp_solver_iters: int = 300
     qp_solver_tol: float = 1.0e-10
@@ -204,6 +205,8 @@ class FDMConfig(BaseModel):
     scheme: Literal['imex', 'imex_picard'] = 'imex'
     boundary: Literal['neumann'] = 'neumann'
     drift_scheme: Literal['upwind', 'central'] = 'upwind'
+    reaction_step: Literal['euler', 'exponential'] = 'exponential'
+    reaction_exp_clip: float = 50.0
     max_state_dim: int = 2
     g_floor: float = 1.0e-10
     enforce_positive: bool = True
@@ -224,6 +227,8 @@ class FDMConfig(BaseModel):
             raise ValueError('fdm.max_state_dim must be 1 or 2.')
         if float(self.g_floor) <= 0.0:
             raise ValueError('fdm.g_floor must be positive.')
+        if float(self.reaction_exp_clip) <= 0.0:
+            raise ValueError('fdm.reaction_exp_clip must be positive.')
         return self
 
 class Config(BaseModel):

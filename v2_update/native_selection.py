@@ -198,6 +198,7 @@ class SelectionLitePPGDPOConfig:
     pipinn_width: int = 96
     pipinn_depth: int = 4
     pipinn_covariance_train_mode: str = 'dcc_current'
+    pipinn_pde_form: str = 'g'
     pipinn_policy_output_mode: str = 'pure_qp'
     pipinn_qp_solver_iters: int = 300
     pipinn_qp_solver_tol: float = 1.0e-10
@@ -216,6 +217,8 @@ class SelectionLitePPGDPOConfig:
     fdm_scheme: str = 'imex'
     fdm_boundary: str = 'neumann'
     fdm_drift_scheme: str = 'upwind'
+    fdm_reaction_step: str = 'exponential'
+    fdm_reaction_exp_clip: float = 50.0
     fdm_max_state_dim: int = 2
     fdm_g_floor: float = 1.0e-10
     fdm_enforce_positive: bool = True
@@ -1102,6 +1105,7 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             width=int(lite_cfg.pipinn_width),
             depth=int(lite_cfg.pipinn_depth),
             covariance_train_mode=str(lite_cfg.pipinn_covariance_train_mode),
+            pde_form=str(lite_cfg.pipinn_pde_form),
             policy_output_mode=str(lite_cfg.pipinn_policy_output_mode),
             qp_solver_iters=int(lite_cfg.pipinn_qp_solver_iters),
             qp_solver_tol=float(lite_cfg.pipinn_qp_solver_tol),
@@ -1122,6 +1126,8 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             scheme=str(lite_cfg.fdm_scheme),
             boundary=str(lite_cfg.fdm_boundary),
             drift_scheme=str(lite_cfg.fdm_drift_scheme),
+            reaction_step=str(lite_cfg.fdm_reaction_step),
+            reaction_exp_clip=float(lite_cfg.fdm_reaction_exp_clip),
             max_state_dim=int(lite_cfg.fdm_max_state_dim),
             g_floor=float(lite_cfg.fdm_g_floor),
             enforce_positive=bool(lite_cfg.fdm_enforce_positive),
@@ -1158,6 +1164,7 @@ def _pipinn_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[s
         'width': int(lite_cfg.pipinn_width),
         'depth': int(lite_cfg.pipinn_depth),
         'covariance_train_mode': str(lite_cfg.pipinn_covariance_train_mode),
+        'pde_form': str(lite_cfg.pipinn_pde_form),
         'policy_output_mode': str(lite_cfg.pipinn_policy_output_mode),
         'qp_solver_iters': int(lite_cfg.pipinn_qp_solver_iters),
         'qp_solver_tol': float(lite_cfg.pipinn_qp_solver_tol),
@@ -1181,6 +1188,8 @@ def _fdm_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[str,
         'scheme': str(lite_cfg.fdm_scheme),
         'boundary': str(lite_cfg.fdm_boundary),
         'drift_scheme': str(lite_cfg.fdm_drift_scheme),
+        'reaction_step': str(lite_cfg.fdm_reaction_step),
+        'reaction_exp_clip': float(lite_cfg.fdm_reaction_exp_clip),
         'max_state_dim': int(lite_cfg.fdm_max_state_dim),
         'g_floor': float(lite_cfg.fdm_g_floor),
         'enforce_positive': bool(lite_cfg.fdm_enforce_positive),
@@ -1755,6 +1764,7 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.width = int(lite_cfg.pipinn_width)
         out.pipinn.depth = int(lite_cfg.pipinn_depth)
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
+        out.pipinn.pde_form = str(lite_cfg.pipinn_pde_form)
         out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
         out.pipinn.qp_solver_iters = int(lite_cfg.pipinn_qp_solver_iters)
         out.pipinn.qp_solver_tol = float(lite_cfg.pipinn_qp_solver_tol)
@@ -1774,9 +1784,13 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.fdm.scheme = str(lite_cfg.fdm_scheme)
         out.fdm.boundary = str(lite_cfg.fdm_boundary)
         out.fdm.drift_scheme = str(lite_cfg.fdm_drift_scheme)
+        out.fdm.max_state_dim = int(getattr(lite_cfg, 'fdm_max_state_dim', 2))
         out.fdm.g_floor = float(lite_cfg.fdm_g_floor)
+        out.fdm.enforce_positive = bool(getattr(lite_cfg, 'fdm_enforce_positive', True))
         out.fdm.picard_iters = int(lite_cfg.fdm_picard_iters)
         out.fdm.picard_tol = float(lite_cfg.fdm_picard_tol)
+        out.fdm.save_grid = bool(getattr(lite_cfg, 'fdm_save_grid', False))
+        out.fdm.save_training_logs = bool(getattr(lite_cfg, 'fdm_save_training_logs', True))
     return out
 
 def _set_config_window_from_block(cfg: Config, block: dict[str, Any]) -> Config:
@@ -2230,6 +2244,7 @@ def native_select_factor_suite(
     pipinn_width: int = 96,
     pipinn_depth: int = 4,
     pipinn_covariance_train_mode: str = 'dcc_current',
+    pipinn_pde_form: str = 'g',
     pipinn_policy_output_mode: str | None = None,
     pipinn_qp_solver_iters: int = 300,
     pipinn_qp_solver_tol: float = 1.0e-10,
@@ -2247,6 +2262,8 @@ def native_select_factor_suite(
     fdm_scheme: str = 'imex',
     fdm_boundary: str = 'neumann',
     fdm_drift_scheme: str = 'upwind',
+    fdm_reaction_step: str = 'exponential',
+    fdm_reaction_exp_clip: float = 50.0,
     fdm_g_floor: float = 1.0e-10,
     fdm_picard_iters: int = 5,
     fdm_picard_tol: float = 1.0e-8,
@@ -2346,6 +2363,12 @@ def native_select_factor_suite(
         pipinn_policy_output_mode = 'foc_clip' if backend_norm in {'pinn', 'fdm'} else 'pure_qp'
     selection_eval_mode_norm = str(selection_eval_mode).strip().lower()
     pipinn_policy_output_mode_norm = str(pipinn_policy_output_mode).strip().lower()
+    pipinn_pde_form_norm = str(pipinn_pde_form).strip().lower()
+    
+    if pipinn_pde_form_norm not in {'log_g', 'g'}:
+        raise ValueError(
+            "pipinn_pde_form must be one of 'log_g', 'g'."
+        )
     if selection_eval_mode_norm not in {'projection', 'pure_qp', 'foc_clip'}:
         raise ValueError(
             "selection_eval_mode must be one of 'projection', 'pure_qp', or 'foc_clip'."
@@ -2399,6 +2422,7 @@ def native_select_factor_suite(
         pipinn_width=int(pipinn_width),
         pipinn_depth=int(pipinn_depth),
         pipinn_covariance_train_mode=str(pipinn_covariance_train_mode),
+        pipinn_pde_form=pipinn_pde_form_norm,
         pipinn_policy_output_mode=pipinn_policy_output_mode_norm,
         pipinn_qp_solver_iters=int(pipinn_qp_solver_iters),
         pipinn_qp_solver_tol=float(pipinn_qp_solver_tol),
@@ -2416,6 +2440,8 @@ def native_select_factor_suite(
         fdm_scheme=str(fdm_scheme),
         fdm_boundary=str(fdm_boundary),
         fdm_drift_scheme=str(fdm_drift_scheme),
+        fdm_reaction_step=str(fdm_reaction_step),
+        fdm_reaction_exp_clip=float(fdm_reaction_exp_clip),
         fdm_g_floor=float(fdm_g_floor),
         fdm_picard_iters=int(fdm_picard_iters),
         fdm_picard_tol=float(fdm_picard_tol),

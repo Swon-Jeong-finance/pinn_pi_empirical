@@ -186,6 +186,7 @@ def cmd_select_native_suite(args):
         pipinn_width=args.pipinn_width,
         pipinn_depth=args.pipinn_depth,
         pipinn_covariance_train_mode=args.pipinn_covariance_train_mode,
+        pipinn_pde_form=args.pipinn_pde_form,
         pipinn_policy_output_mode=args.pipinn_policy_output_mode,
         pipinn_qp_solver_iters=args.pipinn_qp_solver_iters,
         pipinn_qp_solver_tol=args.pipinn_qp_solver_tol,
@@ -203,6 +204,8 @@ def cmd_select_native_suite(args):
         fdm_scheme=args.fdm_scheme,
         fdm_boundary=args.fdm_boundary,
         fdm_drift_scheme=args.fdm_drift_scheme,
+        fdm_reaction_step=args.fdm_reaction_step,
+        fdm_reaction_exp_clip=args.fdm_reaction_exp_clip,
         fdm_g_floor=args.fdm_g_floor,
         fdm_picard_iters=args.fdm_picard_iters,
         fdm_picard_tol=args.fdm_picard_tol,
@@ -336,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-width', type=int, default=128)
     p_native.add_argument('--pipinn-depth', type=int, default=2)
     p_native.add_argument('--pipinn-covariance-train-mode', choices=['dcc_current', 'cross_resid'], default='dcc_current')
+    p_native.add_argument('--pipinn-pde-form', choices=['log_g', 'g'], default='g', help="HJB form to learn. 'log_g' (default) uses Hopf-Cole transform u=log(g). 'g' learns g directly.")
     p_native.add_argument(
     '--pipinn-policy-output-mode',
     choices=['projection', 'pure_qp', 'foc_clip'],
@@ -358,6 +362,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--fdm-scheme', choices=['imex', 'imex_picard'], default='imex')
     p_native.add_argument('--fdm-boundary', choices=['neumann'], default='neumann')
     p_native.add_argument('--fdm-drift-scheme', choices=['upwind', 'central'], default='upwind')
+    p_native.add_argument('--fdm-reaction-step', choices=['euler', 'exponential'], default='exponential')
+    p_native.add_argument('--fdm-reaction-exp-clip', type=float, default=50.0)
     p_native.add_argument('--fdm-g-floor', type=float, default=1.0e-10)
     p_native.add_argument('--fdm-picard-iters', type=int, default=5)
     p_native.add_argument('--fdm-picard-tol', type=float, default=1.0e-8)

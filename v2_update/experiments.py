@@ -735,6 +735,7 @@ def _write_benchmark_notes(
     market_source: str,
     backend: str = 'ppgdpo',
     pipinn_policy_output_mode: str | None = None,
+    pipinn_pde_form: str | None = None,
 ) -> Path:
     benchmark_roles = {
         'predictive_static': 'reference_only',
@@ -780,6 +781,8 @@ def _write_benchmark_notes(
     }
     if backend_norm in {'pipinn', 'pinn', 'fdm'}:
         payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or ('foc_clip' if backend_norm in {'pinn', 'fdm'} else 'pure_qp'))
+        if backend_norm in {'pipinn', 'pinn'}:
+            payload['pipinn_pde_form'] = str(pipinn_pde_form or 'g')
         if backend_norm in {'pinn', 'fdm'}:
             name = 'fdm' if backend_norm == 'fdm' else 'pinn'
             payload['notes'].append(
@@ -1014,6 +1017,9 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         for slot in weight_strategy_slots
     }
     monthly_rows: list[dict[str, object]] = []
+        # Per-outer-iter policy weight snapshots for PI convergence diagnostics.
+    pi_paths_rows: list[dict[str, object]] = []
+    last_refit_date: pd.Timestamp | None = None
     prev_mu_for_cov_update: pd.Series | None = None
     prev_state_pred_for_cross: pd.Series | None = None
     cached = None
@@ -1058,6 +1064,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         if refit_now:
             refit_counter += 1
             last_refit_step = i
+            last_refit_date = pd.Timestamp(date_t)
             
             state_train, state_train_next, ret_train_next, factor_repr, mean_model, cov_model = _fit_models_for_window(
                 cfg, states, returns, factors, train_dates
@@ -1142,7 +1149,10 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         cov_eval = cov_full if cfg.ppgdpo.covariance_mode == 'full' else cov_diag
         mu_arr = mu.to_numpy(dtype=float)
         factor_mu = mean_model.predict_factor_means(state_row, latest_factor_return=latest_factor_return, regime_weight=regime_prob if mean_model.kind == 'factor_apt_regime' else None)
-
+        
+        next_date = all_dates[pos + 1]
+        realized_ret = returns.loc[next_date].to_numpy(dtype=float)
+        
         rebalance_now = _should_rebalance(cfg, i)
         targets: dict[tuple[str, str], np.ndarray] = {}
         if rebalance_now:
@@ -1181,6 +1191,31 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'zero': zero_cross,
                 'regime_gated': regime_gated_cross,
             }
+            # --- Per-outer-iter policy snapshots for PI convergence (cross_mode='estimated' only) ---
+            snapshots = getattr(trainer, 'outer_iter_snapshots', None) if backend in {'pipinn', 'pinn'} else None
+            if snapshots:
+                saved_state = {k: v.detach().clone() for k, v in trainer.model_u.state_dict().items()}
+                try:
+                    for outer_idx, snap in enumerate(snapshots):
+                        trainer.model_u.load_state_dict(snap)
+                        w_snap, _ = trainer.policy_weights_with_debug(
+                            state_row,
+                            covariance=cov_eval,
+                            cross_mat=cross_base,
+                            tau=tau_remaining,
+                        )
+                        pi_paths_rows.append({
+                            'refit_date': last_refit_date,
+                            'decision_date': pd.Timestamp(date_t),
+                            'return_date': pd.Timestamp(next_date),
+                            'refit_index': int(refit_counter),
+                            'outer_iter': int(outer_idx),
+                            'tau_remaining': float(tau_remaining),
+                            **{f'w_{asset}': float(w_snap[k]) for k, asset in enumerate(returns.columns)},
+                        })
+                finally:
+                    trainer.model_u.load_state_dict(saved_state)
+            # --- end pi_paths snapshot block ---
             targets[('predictive_static', reference_cross_mode)] = predictive_static_w
             targets[('pgdpo', reference_cross_mode)] = pgdpo_w
             for cross_mode in cross_modes:
@@ -1242,9 +1277,6 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'factor_mu_json': json.dumps({k: float(v) for k, v in (factor_mu if factor_mu is not None else pd.Series(dtype=float)).items()}),
                 'mean_model_kind': cfg.mean_model.kind,
             }
-
-        next_date = all_dates[pos + 1]
-        realized_ret = returns.loc[next_date].to_numpy(dtype=float)
 
         for (strategy, cross_mode), current_holdings in list(holdings.items()):
             if rebalance_now:
@@ -1331,6 +1363,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         market_source=market_source,
         backend=backend,
         pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if _is_value_backend(str(backend).lower()) else None,
+        pipinn_pde_form=str(getattr(cfg.pipinn, 'pde_form', 'g')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
     )
     
 
@@ -1345,6 +1378,10 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         'cross_mode',
     ]
     monthly.to_csv(output_dir / 'monthly' / 'monthly_paths.csv', index=False)
+    # Write per-outer-iter policy snapshots (only when pipinn/pinn was used and produced rows).
+    if pi_paths_rows:
+        pi_paths_df = pd.DataFrame(pi_paths_rows)
+        pi_paths_df.to_csv(output_dir / 'monthly' / 'pi_paths.csv', index=False)
     zero_summary = _augment_summary(_summarize(monthly, cfg.policy.risk_aversion, return_col='gross_return', group_cols=group_cols), cfg)
     zero_summary.to_csv(output_dir / 'comparison_cross_modes_zero_cost_summary.csv', index=False)
     all_costs_summary = _augment_summary(_summarize(monthly, cfg.policy.risk_aversion, return_col='net_return', group_cols=group_cols), cfg)
