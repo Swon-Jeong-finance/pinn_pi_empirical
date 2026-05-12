@@ -91,11 +91,15 @@ def _run_single_rank_protocol(
         or manifest.get('selection_optimizer_backend')
         or ''
     ).strip().lower()
-    if entry_backend in {'ppgdpo', 'pipinn', 'pinn', 'fdm'}:
+    if entry_backend in {'ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'}:
         payload['optimizer_backend'] = entry_backend
     if entry_backend in {'pinn', 'fdm'}:
         payload.setdefault('pipinn', {})
         payload['pipinn']['policy_output_mode'] = 'foc_clip'
+    if entry_backend == 'fdm_pi':
+        payload.setdefault('pipinn', {})
+        payload['pipinn']['policy_output_mode'] = 'pure_qp'
+        payload['pipinn']['pde_form'] = 'g'
     base_cfg = Config.model_validate(payload)
     base_output_dir = Path(base_cfg.project.output_dir)
     rank_dir = Path(rank_root) / f'rank_{rank:03d}'
@@ -145,7 +149,7 @@ def _run_single_rank_protocol(
         'output_dir': str(artifacts.output_dir),
         'device': (
             'cpu'
-            if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() == 'fdm'
+            if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() in {'fdm', 'fdm_pi'}
             else device_override
             or (cfg.pipinn.device if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() in {'pipinn', 'pinn'} else cfg.ppgdpo.device)
         ),

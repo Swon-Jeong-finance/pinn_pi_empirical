@@ -23,7 +23,7 @@ from .covariance import AssetADCCCovariance, AssetDCCCovariance, AssetRegimeDCCC
 from .policies import solve_equal_weight, solve_mean_variance, solve_min_variance, solve_projected, solve_risk_parity
 from .ppgdpo import train_warmup_policy, solve_ppgdpo_projection
 from .pipinn_backend import train_pipinn_policy
-from .fdm_backend import train_fdm_policy
+from .fdm_backend import train_fdm_policy, train_fdm_pi_policy
 from .transition import fit_state_transition, estimate_return_state_cross
 from .utils import ensure_dir, annualized_return, annualized_vol, sharpe_ratio, certainty_equivalent_annual, max_drawdown
 
@@ -399,6 +399,21 @@ def _fit_dynamic_policy_backend(
             warm_start_from=prev_trainer,
             training_mode=backend,
         )
+    elif backend == 'fdm_pi':
+        trainer = train_fdm_pi_policy(
+            state_train,
+            ret_train_next,
+            cfg,
+            transaction_cost=transaction_cost,
+            mean_model=mean_model,
+            transition=transition,
+            cross_est=cross_est,
+            cov_model=cov_model,
+            factor_repr=factor_repr,
+            progress_label=progress_label,
+            tau_max=tau_max,
+            warm_start_from=prev_trainer,
+        )
     elif backend == 'fdm':
         trainer = train_fdm_policy(
             state_train,
@@ -430,7 +445,7 @@ def _fit_dynamic_policy_backend(
 def _optimizer_backend(cfg: Config) -> str:
     return str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower()
 
-VALUE_BACKENDS = {'pipinn', 'pinn', 'fdm'}
+VALUE_BACKENDS = {'pipinn', 'pinn', 'fdm', 'fdm_pi'}
 FOC_CLIP_BACKENDS = {'pinn', 'fdm'}
 
 def _is_value_backend(backend: str) -> bool:
@@ -553,27 +568,33 @@ def _write_fdm_training_log(
     refit_index: int,
 ) -> tuple[Path | None, dict[str, Any] | None]:
     diagnostics = dict(getattr(getattr(trainer, 'solution', None), 'diagnostics', {}) or {})
-    if not diagnostics:
+    history = [dict(row) for row in (getattr(trainer, 'train_history', []) or [])]
+    if not diagnostics and not history:
         return None, None
     log_dir = ensure_dir(output_dir / 'training_logs' / 'fdm')
     csv_path = log_dir / f"refit_{int(refit_index):03d}_{pd.Timestamp(decision_date).strftime('%Y%m%d')}.csv"
     train_start = pd.Timestamp(train_dates[0]) if len(train_dates) else pd.NaT
     train_end = pd.Timestamp(train_dates[-1]) if len(train_dates) else pd.NaT
-    row = {
-        'refit_index': int(refit_index),
-        'decision_date': pd.Timestamp(decision_date),
-        'train_window_start': train_start,
-        'train_window_end': train_end,
-        'train_objective': float(getattr(trainer, 'train_objective', np.nan)),
-        'best_validation_loss': float(getattr(trainer, 'best_validation_loss', np.nan)),
-        **diagnostics,
-    }
-    pd.DataFrame([row]).to_csv(csv_path, index=False)
+    rows = history if history else [diagnostics]
+    enriched_rows = []
+    for row_idx, hist_row in enumerate(rows):
+        enriched_rows.append({
+            'refit_index': int(refit_index),
+            'decision_date': pd.Timestamp(decision_date),
+            'train_window_start': train_start,
+            'train_window_end': train_end,
+            'history_row': int(row_idx),
+            'train_objective': float(getattr(trainer, 'train_objective', np.nan)),
+            'best_validation_loss': float(getattr(trainer, 'best_validation_loss', np.nan)),
+            **dict(hist_row),
+        })
+    pd.DataFrame(enriched_rows).to_csv(csv_path, index=False)
     manifest_row = {
         'refit_index': int(refit_index),
         'decision_date': str(pd.Timestamp(decision_date).date()),
         'train_window_start': str(train_start.date()) if pd.notna(train_start) else None,
         'train_window_end': str(train_end.date()) if pd.notna(train_end) else None,
+        'rows_logged': int(len(enriched_rows)),
         'train_objective': float(getattr(trainer, 'train_objective', np.nan)),
         'best_validation_loss': float(getattr(trainer, 'best_validation_loss', np.nan)),
         'history_csv': _relative_output_path(csv_path, output_dir),
@@ -624,6 +645,32 @@ def _fdm_monthly_debug_columns(proj_debug: dict[str, Any] | None, *, strategy: s
     }
 
 
+
+def _value_backend_base_label(backend: str) -> str:
+    backend_norm = str(backend).lower()
+    if backend_norm in {'pipinn', 'pinn', 'fdm', 'fdm_pi'}:
+        return backend_norm
+    return 'ppgdpo'
+
+
+def _value_backend_display_label(backend: str) -> str:
+    backend_norm = str(backend).lower()
+    return {
+        'pipinn': 'PI-PINN',
+        'pinn': 'PINN',
+        'fdm': 'FDM',
+        'fdm_pi': 'FDM-PI',
+    }.get(backend_norm, str(backend).upper())
+
+
+def _value_backend_method_note(backend: str) -> str:
+    backend_norm = str(backend).lower()
+    if backend_norm in {'pinn', 'fdm'}:
+        return 'FOC-derived unconstrained policy with long-only/risky-cap clipping'
+    if backend_norm == 'fdm_pi':
+        return 'FDM policy-evaluation with PI-PINN admissible-set QP policy improvement'
+    return 'value-gradient pure-QP/projection policy'
+
 def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_source: str = '') -> dict[str, Any]:
     strategy = str(strategy)
     cross_mode = str(cross_mode)
@@ -641,7 +688,7 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
         }
     if strategy == 'pgdpo':
         if _is_value_backend(backend):
-            base = 'fdm' if backend == 'fdm' else ('pinn' if backend == 'pinn' else 'pipinn')
+            base = _value_backend_base_label(backend)
             return {
                 'strategy': f'{base}_traincov_diag',
                 'cross_mode': 'estimated',
@@ -650,9 +697,7 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
                 'comparison_role': 'method_diagnostic',
                 'benchmark_primary': False,
                 'benchmark_note': (
-                    'PINN trainer-default FOC clipping policy with frozen train-window covariance and estimated cross'
-                    if backend == 'pinn'
-                    else ('FDM trainer-default FOC clipping policy with frozen train-window covariance and estimated cross' if backend == 'fdm' else 'PI-PINN trainer-default projection with frozen train-window covariance and estimated cross')
+                    f'{_value_backend_display_label(backend)} trainer-default {_value_backend_method_note(backend)} with frozen train-window covariance and estimated cross'
                 ),
                 'benchmark_source': '',
             }
@@ -668,13 +713,9 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
         }
     if strategy == 'ppgdpo':
         if _is_value_backend(backend):
-            base = 'fdm' if backend == 'fdm' else ('pinn' if backend == 'pinn' else 'pipinn')
-            label = 'FDM' if backend == 'fdm' else ('PINN' if backend == 'pinn' else 'PI-PINN')
-            method_note = (
-                'FOC-derived unconstrained policy with long-only/risky-cap clipping'
-                if backend in {'pinn', 'fdm'}
-                else 'value-gradient pure-QP/projection policy'
-            )
+            base = _value_backend_base_label(backend)
+            label = _value_backend_display_label(backend)
+            method_note = _value_backend_method_note(backend)
             mapping = {
                 'estimated': (f'{base}', f'{base}', 'ppgdpo', f'{label} {method_note} with estimated cross'),
                 'zero': (f'{base}_zero', f'{base}_zero', 'ppgdpo_zero', f'{label} {method_note} with zero cross'),
@@ -749,8 +790,8 @@ def _write_benchmark_notes(
         'policy': 'pgdpo',
     }
     backend_norm = str(backend).lower()
-    if backend_norm in {'pipinn', 'pinn', 'fdm'}:
-        base = 'fdm' if backend_norm == 'fdm' else ('pinn' if backend_norm == 'pinn' else 'pipinn')
+    if backend_norm in {'pipinn', 'pinn', 'fdm', 'fdm_pi'}:
+        base = _value_backend_base_label(backend_norm)
         strategy_label_map.update({
             base: 'ppgdpo',
             f'{base}_zero': 'ppgdpo_zero',
@@ -779,14 +820,18 @@ def _write_benchmark_notes(
             'ppgdpo / ppgdpo_zero / ppgdpo_regime_gated remain the main mechanism-comparison strategies',
         ],
     }
-    if backend_norm in {'pipinn', 'pinn', 'fdm'}:
+    if backend_norm in {'pipinn', 'pinn', 'fdm', 'fdm_pi'}:
         payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or ('foc_clip' if backend_norm in {'pinn', 'fdm'} else 'pure_qp'))
-        if backend_norm in {'pipinn', 'pinn'}:
+        if backend_norm in {'pipinn', 'pinn', 'fdm_pi'}:
             payload['pipinn_pde_form'] = str(pipinn_pde_form or 'g')
         if backend_norm in {'pinn', 'fdm'}:
             name = 'fdm' if backend_norm == 'fdm' else 'pinn'
             payload['notes'].append(
                 f'{name} / {name}_zero / {name}_regime_gated use FOC-derived unconstrained policy followed by long-only/risky-cap clipping.'
+            )
+        if backend_norm == 'fdm_pi':
+            payload['notes'].append(
+                'fdm_pi / fdm_pi_zero / fdm_pi_regime_gated use FDM fixed-policy g-PDE evaluation followed by PI-PINN QP policy improvement.'
             )
     if 'market' in set(standard_benchmarks):
         payload['market_benchmark_source'] = market_source
@@ -982,7 +1027,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         )
     emit_pipinn_frozen_traincov = _emit_pipinn_frozen_traincov_strategy(cfg)
     save_pipinn_training_logs = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'save_training_logs', False))
-    save_fdm_training_logs = backend == 'fdm' and bool(getattr(cfg.fdm, 'save_training_logs', False))
+    save_fdm_training_logs = backend in {'fdm', 'fdm_pi'} and bool(getattr(cfg.fdm, 'save_training_logs', False))
     save_training_logs = save_pipinn_training_logs or save_fdm_training_logs
     show_progress = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'show_progress', False))
     
@@ -1363,7 +1408,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         market_source=market_source,
         backend=backend,
         pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if _is_value_backend(str(backend).lower()) else None,
-        pipinn_pde_form=str(getattr(cfg.pipinn, 'pde_form', 'g')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
+        pipinn_pde_form=str(getattr(cfg.pipinn, 'pde_form', 'g')) if str(backend).lower() in {'pipinn', 'pinn', 'fdm_pi'} else None,
     )
     
 

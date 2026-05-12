@@ -180,7 +180,7 @@ def _build_v2_config_dict(
     fdm_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     backend = str(optimizer_backend).strip().lower()
-    if backend not in {'ppgdpo', 'pipinn', 'pinn', 'fdm'}:
+    if backend not in {'ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'}:
         raise ValueError(f'Unsupported optimizer_backend={optimizer_backend!r}')
     run_tag = backend
     run_output = out_dir / 'outputs' / f'{config_stem}_v2_apt_{run_tag}'
@@ -276,7 +276,7 @@ def _build_v2_config_dict(
             'transaction_cost_bps': float(comparison_transaction_cost_bps),
         },
     }
-    if backend in {'pipinn', 'pinn', 'fdm'} or pipinn_payload is not None:
+    if backend in {'pipinn', 'pinn', 'fdm', 'fdm_pi'} or pipinn_payload is not None:
         merged_pipinn = _default_pipinn_payload()
         if pipinn_payload:
             merged_pipinn.update({k: v for k, v in dict(pipinn_payload).items() if v is not None})
@@ -288,8 +288,17 @@ def _build_v2_config_dict(
                 raise ValueError(
                     "optimizer_backend='pinn' or optimizer_backend='fdm' requires pipinn.policy_output_mode='foc_clip'."
                 )
+        if backend == 'fdm_pi':
+            raw_pipinn_payload = dict(pipinn_payload or {})
+            if raw_pipinn_payload.get('policy_output_mode') is None:
+                merged_pipinn['policy_output_mode'] = 'pure_qp'
+            merged_pipinn['pde_form'] = 'g'
+            if str(merged_pipinn.get('policy_output_mode')).lower() != 'pure_qp':
+                raise ValueError(
+                    "optimizer_backend='fdm_pi' requires pipinn.policy_output_mode='pure_qp'."
+                )
         payload['pipinn'] = merged_pipinn
-    if backend == 'fdm' or fdm_payload is not None:
+    if backend in {'fdm', 'fdm_pi'} or fdm_payload is not None:
         merged_fdm = _default_fdm_payload()
         if fdm_payload:
             merged_fdm.update({k: v for k, v in dict(fdm_payload).items() if v is not None})

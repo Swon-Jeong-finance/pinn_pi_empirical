@@ -313,9 +313,9 @@ def build_parser() -> argparse.ArgumentParser:
     '--selection-eval-mode',
     choices=['projection', 'pure_qp', 'foc_clip'],
     default=None,
-    help="Policy extraction at selection time. If unset, defaults to 'foc_clip' when backend='pinn', otherwise 'pure_qp'.",
+    help="Policy extraction at selection time. If unset, defaults to 'foc_clip' when backend='pinn'/'fdm', otherwise 'pure_qp'.",
     )
-    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn', 'fdm'], default='pipinn')
+    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'], default='pipinn')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
     p_native.add_argument('--pipinn-outer-iters', type=int, default=10)
@@ -344,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     '--pipinn-policy-output-mode',
     choices=['projection', 'pure_qp', 'foc_clip'],
     default=None,
-    help="PI-PINN/PINN trainer policy output mode. If unset, defaults to 'foc_clip' when backend='pinn', otherwise 'pure_qp'.",
+    help="PI-PINN/PINN trainer policy output mode. If unset, defaults to 'foc_clip' when backend='pinn'/'fdm', otherwise 'pure_qp'.",
     )
     p_native.add_argument('--pipinn-qp-solver-iters', type=int, default=300)
     p_native.add_argument('--pipinn-qp-solver-tol', type=float, default=1.0e-10)

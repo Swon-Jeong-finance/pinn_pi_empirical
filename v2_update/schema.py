@@ -232,7 +232,7 @@ class FDMConfig(BaseModel):
         return self
 
 class Config(BaseModel):
-    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn', 'fdm'] = 'ppgdpo'
+    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'] = 'ppgdpo'
     project: ProjectConfig
     data: DataConfig
     split: SplitConfig
@@ -257,5 +257,15 @@ class Config(BaseModel):
                     "optimizer_backend='pinn' or optimizer_backend='fdm' requires pipinn.policy_output_mode='foc_clip'. "
                     "Traditional PINN/FDM uses FOC-derived unconstrained policy plus clipping, "
                     "not pure_qp/projection policy extraction."
+                )
+        if backend == 'fdm_pi':
+            if mode != 'pure_qp':
+                raise ValueError(
+                    "optimizer_backend='fdm_pi' requires pipinn.policy_output_mode='pure_qp'. "
+                    "FDM-PI uses the PI-PINN admissible-set QP policy improvement step."
+                )
+            if str(self.pipinn.pde_form).lower() != 'g':
+                raise ValueError(
+                    "optimizer_backend='fdm_pi' solves the g-form PDE only; set pipinn.pde_form='g'."
                 )
         return self
