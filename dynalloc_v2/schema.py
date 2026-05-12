@@ -169,9 +169,7 @@ class PIPINNConfig(BaseModel):
     width: int = 96
     depth: int = 4
     covariance_train_mode: Literal['dcc_current', 'cross_resid'] = 'dcc_current'
-    # PDE form for the value function. 'log_g' learns u = log g (Hopf-Cole; current default).
-    # 'g' learns g (the reduced value function V = x^{1-γ}/(1-γ) · g) directly without log transform.
-    pde_form: Literal['log_g', 'g'] = 'log_g'
+    pde_form: Literal['log_g', 'g'] = 'g'
     policy_output_mode: Literal['projection', 'pure_qp', 'foc_clip'] = 'pure_qp'
     qp_solver_iters: int = 300
     qp_solver_tol: float = 1.0e-10
@@ -198,8 +196,43 @@ class PIPINNConfig(BaseModel):
             raise ValueError('pipinn.eval_tau_maturity_years must be >= 1.')
         return self
 
+
+class FDMConfig(BaseModel):
+    value_form: Literal['g'] = 'g'
+    n_z1: int = 81
+    n_z2: int = 81
+    n_tau: int = 240
+    scheme: Literal['imex', 'imex_picard'] = 'imex'
+    boundary: Literal['neumann'] = 'neumann'
+    drift_scheme: Literal['upwind', 'central'] = 'upwind'
+    reaction_step: Literal['euler', 'exponential'] = 'exponential'
+    reaction_exp_clip: float = 50.0
+    max_state_dim: int = 2
+    g_floor: float = 1.0e-10
+    enforce_positive: bool = True
+    picard_iters: int = 5
+    picard_tol: float = 1.0e-8
+    save_grid: bool = False
+    save_training_logs: bool = True
+
+    @model_validator(mode='after')
+    def _validate_fdm(self):
+        if int(self.n_z1) < 3:
+            raise ValueError('fdm.n_z1 must be >= 3.')
+        if int(self.n_z2) < 3:
+            raise ValueError('fdm.n_z2 must be >= 3.')
+        if int(self.n_tau) < 1:
+            raise ValueError('fdm.n_tau must be >= 1.')
+        if int(self.max_state_dim) < 1 or int(self.max_state_dim) > 2:
+            raise ValueError('fdm.max_state_dim must be 1 or 2.')
+        if float(self.g_floor) <= 0.0:
+            raise ValueError('fdm.g_floor must be positive.')
+        if float(self.reaction_exp_clip) <= 0.0:
+            raise ValueError('fdm.reaction_exp_clip must be positive.')
+        return self
+
 class Config(BaseModel):
-    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn'] = 'ppgdpo'
+    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn', 'fdm'] = 'ppgdpo'
     project: ProjectConfig
     data: DataConfig
     split: SplitConfig
@@ -212,16 +245,17 @@ class Config(BaseModel):
     experiment: ExperimentConfig = Field(default_factory=ExperimentConfig)
     ppgdpo: PPGDPOConfig = Field(default_factory=PPGDPOConfig)
     pipinn: PIPINNConfig = Field(default_factory=PIPINNConfig)
+    fdm: FDMConfig = Field(default_factory=FDMConfig)
 
     @model_validator(mode='after')
     def _validate_backend_policy_consistency(self):
         backend = str(self.optimizer_backend).lower()
         mode = str(self.pipinn.policy_output_mode).lower()
-        if backend == 'pinn':
+        if backend in {'pinn', 'fdm'}:
             if mode != 'foc_clip':
                 raise ValueError(
-                    "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'. "
-                    "Traditional PINN uses FOC-derived unconstrained policy plus clipping, "
+                    "optimizer_backend='pinn' or optimizer_backend='fdm' requires pipinn.policy_output_mode='foc_clip'. "
+                    "Traditional PINN/FDM uses FOC-derived unconstrained policy plus clipping, "
                     "not pure_qp/projection policy extraction."
                 )
         return self

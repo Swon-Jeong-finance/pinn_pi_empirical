@@ -23,6 +23,7 @@ from .covariance import AssetADCCCovariance, AssetDCCCovariance, AssetRegimeDCCC
 from .policies import solve_equal_weight, solve_mean_variance, solve_min_variance, solve_projected, solve_risk_parity
 from .ppgdpo import train_warmup_policy, solve_ppgdpo_projection
 from .pipinn_backend import train_pipinn_policy
+from .fdm_backend import train_fdm_policy
 from .transition import fit_state_transition, estimate_return_state_cross
 from .utils import ensure_dir, annualized_return, annualized_vol, sharpe_ratio, certainty_equivalent_annual, max_drawdown
 
@@ -398,6 +399,21 @@ def _fit_dynamic_policy_backend(
             warm_start_from=prev_trainer,
             training_mode=backend,
         )
+    elif backend == 'fdm':
+        trainer = train_fdm_policy(
+            state_train,
+            ret_train_next,
+            cfg,
+            transaction_cost=transaction_cost,
+            mean_model=mean_model,
+            transition=transition,
+            cross_est=cross_est,
+            cov_model=cov_model,
+            factor_repr=factor_repr,
+            progress_label=progress_label,
+            tau_max=tau_max,
+            warm_start_from=prev_trainer,
+        )
     else:
         trainer = train_warmup_policy(
             state_train,
@@ -413,6 +429,15 @@ def _fit_dynamic_policy_backend(
 
 def _optimizer_backend(cfg: Config) -> str:
     return str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower()
+
+VALUE_BACKENDS = {'pipinn', 'pinn', 'fdm'}
+FOC_CLIP_BACKENDS = {'pinn', 'fdm'}
+
+def _is_value_backend(backend: str) -> bool:
+    return str(backend).lower() in VALUE_BACKENDS
+
+def _requires_foc_clip(backend: str) -> bool:
+    return str(backend).lower() in FOC_CLIP_BACKENDS
 
 def _emit_pipinn_frozen_traincov_strategy(cfg: Config) -> bool:
     return _optimizer_backend(cfg) == 'pipinn' and bool(getattr(cfg.pipinn, 'emit_frozen_traincov_strategy', False))
@@ -519,6 +544,86 @@ def _write_pipinn_training_manifest(output_dir: Path, manifest_rows: list[dict[s
     return manifest_path
 
 
+def _write_fdm_training_log(
+    output_dir: Path,
+    trainer: Any,
+    *,
+    decision_date: pd.Timestamp,
+    train_dates: pd.DatetimeIndex,
+    refit_index: int,
+) -> tuple[Path | None, dict[str, Any] | None]:
+    diagnostics = dict(getattr(getattr(trainer, 'solution', None), 'diagnostics', {}) or {})
+    if not diagnostics:
+        return None, None
+    log_dir = ensure_dir(output_dir / 'training_logs' / 'fdm')
+    csv_path = log_dir / f"refit_{int(refit_index):03d}_{pd.Timestamp(decision_date).strftime('%Y%m%d')}.csv"
+    train_start = pd.Timestamp(train_dates[0]) if len(train_dates) else pd.NaT
+    train_end = pd.Timestamp(train_dates[-1]) if len(train_dates) else pd.NaT
+    row = {
+        'refit_index': int(refit_index),
+        'decision_date': pd.Timestamp(decision_date),
+        'train_window_start': train_start,
+        'train_window_end': train_end,
+        'train_objective': float(getattr(trainer, 'train_objective', np.nan)),
+        'best_validation_loss': float(getattr(trainer, 'best_validation_loss', np.nan)),
+        **diagnostics,
+    }
+    pd.DataFrame([row]).to_csv(csv_path, index=False)
+    manifest_row = {
+        'refit_index': int(refit_index),
+        'decision_date': str(pd.Timestamp(decision_date).date()),
+        'train_window_start': str(train_start.date()) if pd.notna(train_start) else None,
+        'train_window_end': str(train_end.date()) if pd.notna(train_end) else None,
+        'train_objective': float(getattr(trainer, 'train_objective', np.nan)),
+        'best_validation_loss': float(getattr(trainer, 'best_validation_loss', np.nan)),
+        'history_csv': _relative_output_path(csv_path, output_dir),
+        **diagnostics,
+    }
+    return csv_path, manifest_row
+
+
+def _write_fdm_training_manifest(output_dir: Path, manifest_rows: list[dict[str, Any]]) -> Path | None:
+    if not manifest_rows:
+        return None
+    manifest_path = output_dir / 'training_logs' / 'fdm_refit_manifest.csv'
+    ensure_dir(manifest_path.parent)
+    pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
+    return manifest_path
+
+
+def _fdm_monthly_debug_columns(proj_debug: dict[str, Any] | None, *, strategy: str) -> dict[str, Any]:
+    if str(strategy) != 'ppgdpo' or not proj_debug:
+        return {
+            'fdm_value_form': '',
+            'fdm_scheme': '',
+            'fdm_boundary': '',
+            'fdm_state_clipped': False,
+            'fdm_tau_clipped': False,
+            'fdm_g_value': np.nan,
+            'fdm_grad_log_l2': np.nan,
+            'fdm_min_g': np.nan,
+            'fdm_max_g': np.nan,
+            'fdm_max_abs_grad_log': np.nan,
+            'fdm_pde_residual_l2_grid': np.nan,
+            'fdm_boundary_grad_max': np.nan,
+        }
+    grad = np.asarray(proj_debug.get('grad_raw', []), dtype=float)
+    return {
+        'fdm_value_form': str(proj_debug.get('fdm_value_form', '')),
+        'fdm_scheme': str(proj_debug.get('fdm_scheme', '')),
+        'fdm_boundary': str(proj_debug.get('fdm_boundary', '')),
+        'fdm_state_clipped': bool(proj_debug.get('fdm_state_clipped', False)),
+        'fdm_tau_clipped': bool(proj_debug.get('fdm_tau_clipped', False)),
+        'fdm_g_value': float(proj_debug.get('fdm_g_value', np.nan)),
+        'fdm_grad_log_l2': float(np.linalg.norm(grad)) if grad.size else np.nan,
+        'fdm_min_g': float(proj_debug.get('fdm_min_g', np.nan)),
+        'fdm_max_g': float(proj_debug.get('fdm_max_g', np.nan)),
+        'fdm_max_abs_grad_log': float(proj_debug.get('fdm_max_abs_grad_log', np.nan)),
+        'fdm_pde_residual_l2_grid': float(proj_debug.get('fdm_pde_residual_l2_grid', np.nan)),
+        'fdm_boundary_grad_max': float(proj_debug.get('fdm_boundary_grad_max', np.nan)),
+    }
+
+
 def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_source: str = '') -> dict[str, Any]:
     strategy = str(strategy)
     cross_mode = str(cross_mode)
@@ -535,8 +640,8 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
             'benchmark_source': '',
         }
     if strategy == 'pgdpo':
-        if backend in {'pipinn', 'pinn'}:
-            base = 'pinn' if backend == 'pinn' else 'pipinn'
+        if _is_value_backend(backend):
+            base = 'fdm' if backend == 'fdm' else ('pinn' if backend == 'pinn' else 'pipinn')
             return {
                 'strategy': f'{base}_traincov_diag',
                 'cross_mode': 'estimated',
@@ -547,7 +652,7 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
                 'benchmark_note': (
                     'PINN trainer-default FOC clipping policy with frozen train-window covariance and estimated cross'
                     if backend == 'pinn'
-                    else 'PI-PINN trainer-default projection with frozen train-window covariance and estimated cross'
+                    else ('FDM trainer-default FOC clipping policy with frozen train-window covariance and estimated cross' if backend == 'fdm' else 'PI-PINN trainer-default projection with frozen train-window covariance and estimated cross')
                 ),
                 'benchmark_source': '',
             }
@@ -562,12 +667,12 @@ def _strategy_metadata(strategy: str, cross_mode: str, *, backend: str, market_s
             'benchmark_source': '',
         }
     if strategy == 'ppgdpo':
-        if backend in {'pipinn', 'pinn'}:
-            base = 'pinn' if backend == 'pinn' else 'pipinn'
-            label = 'PINN' if backend == 'pinn' else 'PI-PINN'
+        if _is_value_backend(backend):
+            base = 'fdm' if backend == 'fdm' else ('pinn' if backend == 'pinn' else 'pipinn')
+            label = 'FDM' if backend == 'fdm' else ('PINN' if backend == 'pinn' else 'PI-PINN')
             method_note = (
                 'FOC-derived unconstrained policy with long-only/risky-cap clipping'
-                if backend == 'pinn'
+                if backend in {'pinn', 'fdm'}
                 else 'value-gradient pure-QP/projection policy'
             )
             mapping = {
@@ -644,8 +749,8 @@ def _write_benchmark_notes(
         'policy': 'pgdpo',
     }
     backend_norm = str(backend).lower()
-    if backend_norm in {'pipinn', 'pinn'}:
-        base = 'pinn' if backend_norm == 'pinn' else 'pipinn'
+    if backend_norm in {'pipinn', 'pinn', 'fdm'}:
+        base = 'fdm' if backend_norm == 'fdm' else ('pinn' if backend_norm == 'pinn' else 'pipinn')
         strategy_label_map.update({
             base: 'ppgdpo',
             f'{base}_zero': 'ppgdpo_zero',
@@ -674,12 +779,14 @@ def _write_benchmark_notes(
             'ppgdpo / ppgdpo_zero / ppgdpo_regime_gated remain the main mechanism-comparison strategies',
         ],
     }
-    if backend_norm in {'pipinn', 'pinn'}:
-        payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or ('foc_clip' if backend_norm == 'pinn' else 'pure_qp'))
-        payload['pipinn_pde_form'] = str(pipinn_pde_form or 'log_g')
-        if backend_norm == 'pinn':
+    if backend_norm in {'pipinn', 'pinn', 'fdm'}:
+        payload['pipinn_policy_output_mode'] = str(pipinn_policy_output_mode or ('foc_clip' if backend_norm in {'pinn', 'fdm'} else 'pure_qp'))
+        if backend_norm in {'pipinn', 'pinn'}:
+            payload['pipinn_pde_form'] = str(pipinn_pde_form or 'g')
+        if backend_norm in {'pinn', 'fdm'}:
+            name = 'fdm' if backend_norm == 'fdm' else 'pinn'
             payload['notes'].append(
-                'pinn / pinn_zero / pinn_regime_gated use FOC-derived unconstrained policy followed by long-only/risky-cap clipping.'
+                f'{name} / {name}_zero / {name}_regime_gated use FOC-derived unconstrained policy followed by long-only/risky-cap clipping.'
             )
     if 'market' in set(standard_benchmarks):
         payload['market_benchmark_source'] = market_source
@@ -869,12 +976,14 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
 
     backend = _optimizer_backend(cfg)
     pipinn_policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')).lower()
-    if backend == 'pinn' and pipinn_policy_output_mode != 'foc_clip':
+    if backend in {'pinn', 'fdm'} and pipinn_policy_output_mode != 'foc_clip':
         raise ValueError(
-            "optimizer_backend='pinn' requires pipinn.policy_output_mode='foc_clip'."
+            "optimizer_backend='pinn' or optimizer_backend='fdm' requires pipinn.policy_output_mode='foc_clip'."
         )
     emit_pipinn_frozen_traincov = _emit_pipinn_frozen_traincov_strategy(cfg)
-    save_training_logs = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'save_training_logs', False))
+    save_pipinn_training_logs = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'save_training_logs', False))
+    save_fdm_training_logs = backend == 'fdm' and bool(getattr(cfg.fdm, 'save_training_logs', False))
+    save_training_logs = save_pipinn_training_logs or save_fdm_training_logs
     show_progress = backend in {'pipinn', 'pinn'} and bool(getattr(cfg.pipinn, 'show_progress', False))
     
     tc = cfg.comparison.transaction_cost_bps / 10000.0
@@ -908,6 +1017,9 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         for slot in weight_strategy_slots
     }
     monthly_rows: list[dict[str, object]] = []
+        # Per-outer-iter policy weight snapshots for PI convergence diagnostics.
+    pi_paths_rows: list[dict[str, object]] = []
+    last_refit_date: pd.Timestamp | None = None
     prev_mu_for_cov_update: pd.Series | None = None
     prev_state_pred_for_cross: pd.Series | None = None
     cached = None
@@ -924,6 +1036,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
 
     refit_counter = 0
     training_manifest_rows: list[dict[str, Any]] = []
+    fdm_training_manifest_rows: list[dict[str, Any]] = []
     last_training_log_csv: str | None = None
     last_training_window_start: str | None = None
     last_training_window_end: str | None = None
@@ -951,6 +1064,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         if refit_now:
             refit_counter += 1
             last_refit_step = i
+            last_refit_date = pd.Timestamp(date_t)
             
             state_train, state_train_next, ret_train_next, factor_repr, mean_model, cov_model = _fit_models_for_window(
                 cfg, states, returns, factors, train_dates
@@ -969,7 +1083,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 cov_model=cov_model,
                 transaction_cost=tc,
                 progress_label=progress_label,
-                tau_max=tau_remaining if backend in {'pipinn', 'pinn'} else None,
+                tau_max=tau_remaining if _is_value_backend(backend) else None,
                 prev_trainer=prev_trainer_for_warm,
             )
             sample_cov_train = _sample_covariance(ret_train_next)
@@ -979,7 +1093,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             prev_state_pred_for_cross = None
             last_training_window_start = str(pd.Timestamp(train_dates[0]).date()) if len(train_dates) else None
             last_training_window_end = str(pd.Timestamp(train_dates[-1]).date()) if len(train_dates) else None
-            if save_training_logs:
+            if save_pipinn_training_logs:
                 training_log_path, manifest_row = _write_pipinn_training_log(
                     output_dir,
                     trainer,
@@ -990,6 +1104,17 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 last_training_log_csv = _relative_output_path(training_log_path, output_dir)
                 if manifest_row is not None:
                     training_manifest_rows.append(manifest_row)
+            elif save_fdm_training_logs:
+                training_log_path, manifest_row = _write_fdm_training_log(
+                    output_dir,
+                    trainer,
+                    decision_date=pd.Timestamp(date_t),
+                    train_dates=train_dates,
+                    refit_index=refit_counter,
+                )
+                last_training_log_csv = _relative_output_path(training_log_path, output_dir)
+                if manifest_row is not None:
+                    fdm_training_manifest_rows.append(manifest_row)
         # factor_repr, mean_model, cov_model, cross_est, trainer, sample_cov_train = cached
         factor_repr, mean_model, cov_model, transition_model, cross_est, trainer, sample_cov_train = cached
         
@@ -1008,7 +1133,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         regime_prob = _resolve_regime_probability(cov_model, mean_model, latest_factor_return)
         mu = mean_model.predict(state_row, latest_factor_return=latest_factor_return, regime_weight=regime_prob if mean_model.kind == 'factor_apt_regime' else None)
         ret_source_order = list(cross_est.cross.index)
-        if backend in {'pipinn', 'pinn'}:
+        if _is_value_backend(backend):
             # PI-PINN/PINN: keep evaluation covariance on the same joint estimator
             # that produced Sigma_train, Q, and C during training.
             # Use the same asset order as the PI-PINN trainer (mean_model.assets) to guarantee
@@ -1024,11 +1149,14 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         cov_eval = cov_full if cfg.ppgdpo.covariance_mode == 'full' else cov_diag
         mu_arr = mu.to_numpy(dtype=float)
         factor_mu = mean_model.predict_factor_means(state_row, latest_factor_return=latest_factor_return, regime_weight=regime_prob if mean_model.kind == 'factor_apt_regime' else None)
-
+        
+        next_date = all_dates[pos + 1]
+        realized_ret = returns.loc[next_date].to_numpy(dtype=float)
+        
         rebalance_now = _should_rebalance(cfg, i)
         targets: dict[tuple[str, str], np.ndarray] = {}
         if rebalance_now:
-            if backend in {'pipinn', 'pinn'}:
+            if _is_value_backend(backend):
                 pgdpo_w = trainer.policy_weights(state_row, tau=tau_remaining)
             else:
                 pgdpo_w = trainer.policy_weights(state_row)
@@ -1037,7 +1165,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
             # tau_remaining = float(max(horizon_steps - (i - last_refit_step), 1))
             # last_costates = trainer.estimate_costates(state_row, tau0=tau_remaining)
             # last_costates = trainer.estimate_costates(state_row)
-            if backend in {'pipinn', 'pinn'}:
+            if _is_value_backend(backend):
                 last_costates = trainer.estimate_costates(state_row, tau0=tau_remaining)
             else:
                 last_costates = trainer.estimate_costates(state_row)
@@ -1063,12 +1191,37 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'zero': zero_cross,
                 'regime_gated': regime_gated_cross,
             }
+            # --- Per-outer-iter policy snapshots for PI convergence (cross_mode='estimated' only) ---
+            snapshots = getattr(trainer, 'outer_iter_snapshots', None) if backend in {'pipinn', 'pinn'} else None
+            if snapshots:
+                saved_state = {k: v.detach().clone() for k, v in trainer.model_u.state_dict().items()}
+                try:
+                    for outer_idx, snap in enumerate(snapshots):
+                        trainer.model_u.load_state_dict(snap)
+                        w_snap, _ = trainer.policy_weights_with_debug(
+                            state_row,
+                            covariance=cov_eval,
+                            cross_mat=cross_base,
+                            tau=tau_remaining,
+                        )
+                        pi_paths_rows.append({
+                            'refit_date': last_refit_date,
+                            'decision_date': pd.Timestamp(date_t),
+                            'return_date': pd.Timestamp(next_date),
+                            'refit_index': int(refit_counter),
+                            'outer_iter': int(outer_idx),
+                            'tau_remaining': float(tau_remaining),
+                            **{f'w_{asset}': float(w_snap[k]) for k, asset in enumerate(returns.columns)},
+                        })
+                finally:
+                    trainer.model_u.load_state_dict(saved_state)
+            # --- end pi_paths snapshot block ---
             targets[('predictive_static', reference_cross_mode)] = predictive_static_w
             targets[('pgdpo', reference_cross_mode)] = pgdpo_w
             for cross_mode in cross_modes:
                 cross_mat = cross_lookup.get(str(cross_mode), cross_base)
                 policy_output_mode = str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')).lower()
-                if backend in {'pipinn', 'pinn'} and policy_output_mode in {'pure_qp', 'foc_clip'}:
+                if _is_value_backend(backend) and policy_output_mode in {'pure_qp', 'foc_clip'}:
                     ppgdpo_w, proj_debug = trainer.policy_weights_with_debug(
                         state_row,
                         covariance=cov_eval,
@@ -1108,7 +1261,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 targets[('market', benchmark_cross_mode)] = solve_equal_weight(returns.shape[1], effective_risky_cap)
             # PI-PINN/PINN path doesn't construct cov_fc; build factor_var directly from
             # the factor representation so logging is well-defined under both backends.
-            if backend in {'pipinn', 'pinn'}:
+            if _is_value_backend(backend):
                 factor_var_dict = {
                     str(c): float(v)
                     for c, v in zip(factor_repr.loadings.columns, np.diag(cov_full))[: len(factor_repr.loadings.columns)]
@@ -1124,9 +1277,6 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'factor_mu_json': json.dumps({k: float(v) for k, v in (factor_mu if factor_mu is not None else pd.Series(dtype=float)).items()}),
                 'mean_model_kind': cfg.mean_model.kind,
             }
-
-        next_date = all_dates[pos + 1]
-        realized_ret = returns.loc[next_date].to_numpy(dtype=float)
 
         for (strategy, cross_mode), current_holdings in list(holdings.items()):
             if rebalance_now:
@@ -1162,6 +1312,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'training_window_start': last_training_window_start,
                 'training_window_end': last_training_window_end,
                 'refit_index': int(refit_counter),
+                **_fdm_monthly_debug_columns(proj_debug, strategy=strategy),
             })
             holdings[(strategy, cross_mode)] = _drift_holdings(weights_for_return, realized_ret)
 
@@ -1194,6 +1345,7 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
                 'training_window_start': last_training_window_start,
                 'training_window_end': last_training_window_end,
                 'refit_index': int(refit_counter),
+                **_fdm_monthly_debug_columns(None, strategy=strategy),
             })
         prev_mu_for_cov_update = mu.reindex(returns.columns)
         prev_state_pred_for_cross = transition_model.predict(state_row).reindex(cfg.state.columns)
@@ -1210,8 +1362,8 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         benchmark_cross_mode=benchmark_cross_mode,
         market_source=market_source,
         backend=backend,
-        pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
-        pipinn_pde_form=str(getattr(cfg.pipinn, 'pde_form', 'log_g')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
+        pipinn_policy_output_mode=str(getattr(cfg.pipinn, 'policy_output_mode', 'pure_qp')) if _is_value_backend(str(backend).lower()) else None,
+        pipinn_pde_form=str(getattr(cfg.pipinn, 'pde_form', 'g')) if str(backend).lower() in {'pipinn', 'pinn'} else None,
     )
     
 
@@ -1226,13 +1378,19 @@ def _run_ppgdpo_experiment(cfg: Config) -> RunArtifacts:
         'cross_mode',
     ]
     monthly.to_csv(output_dir / 'monthly' / 'monthly_paths.csv', index=False)
+    # Write per-outer-iter policy snapshots (only when pipinn/pinn was used and produced rows).
+    if pi_paths_rows:
+        pi_paths_df = pd.DataFrame(pi_paths_rows)
+        pi_paths_df.to_csv(output_dir / 'monthly' / 'pi_paths.csv', index=False)
     zero_summary = _augment_summary(_summarize(monthly, cfg.policy.risk_aversion, return_col='gross_return', group_cols=group_cols), cfg)
     zero_summary.to_csv(output_dir / 'comparison_cross_modes_zero_cost_summary.csv', index=False)
     all_costs_summary = _augment_summary(_summarize(monthly, cfg.policy.risk_aversion, return_col='net_return', group_cols=group_cols), cfg)
     all_costs_summary.to_csv(output_dir / 'comparison_cross_modes_all_costs_summary.csv', index=False)
     monthly.to_csv(output_dir / 'comparison_results.csv', index=False)
-    if save_training_logs:
+    if save_pipinn_training_logs:
         _write_pipinn_training_manifest(output_dir, training_manifest_rows)
+    if save_fdm_training_logs:
+        _write_fdm_training_manifest(output_dir, fdm_training_manifest_rows)
 
     return RunArtifacts(
         output_dir=output_dir,

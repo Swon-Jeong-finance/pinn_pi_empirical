@@ -391,6 +391,7 @@ class TrainedPIPINN:
         train_seed: int,
         train_history: list[dict[str, Any]] | None = None,
         best_validation_loss: float | None = None,
+        outer_iter_snapshots: list[dict] | None = None,
     ):
         self.model_u = model_u
         self.env = env
@@ -400,6 +401,9 @@ class TrainedPIPINN:
         self.asset_columns = list(env.asset_columns)
         self.train_history = list(train_history or [])
         self.best_validation_loss = float(best_validation_loss) if best_validation_loss is not None else float('nan')
+        # Snapshots of model_u.state_dict() at end of each outer iter (index 0 = pre-training initial state).
+        # Used by walk-forward to record per-outer-iter policy weights for PI convergence diagnosis.
+        self.outer_iter_snapshots = list(outer_iter_snapshots or [])
 
     def _state_tensor(self, state_row: pd.Series | np.ndarray) -> torch.Tensor:
         if isinstance(state_row, pd.Series):
@@ -1112,6 +1116,11 @@ def train_pipinn_policy(
         policy_u_net = copy.deepcopy(model_u).eval()
     else:
         policy_u_net = None
+    # Per-outer-iter snapshots of model_u for PI convergence diagnostics.
+    # Index 0 = initial network (post-init, post-warm-start, post-g-form-bias), before any training.
+    outer_iter_snapshots: list[dict] = [
+        {k: v.detach().cpu().clone() for k, v in model_u.state_dict().items()}
+    ]
     global_epoch = 0
     show_progress = bool(getattr(cfg.pipinn, 'show_progress', False))
     show_epoch_progress = bool(getattr(cfg.pipinn, 'show_epoch_progress', False))
@@ -1174,6 +1183,14 @@ def train_pipinn_policy(
             best_state = {k: v.detach().cpu().clone() for k, v in model_u.state_dict().items()}
         if training_mode_norm != 'pinn':
             policy_u_net = copy.deepcopy(model_u).eval()
+        # Capture cumulative-best snapshot after this outer iter.
+        # Records the same weights that walk-forward will actually use, so convergence is
+        # measured on the policy that actually gets deployed (rather than the noisy last-epoch state).
+        # Fallback to current model_u if no best has been recorded yet (e.g. all val_losses NaN).
+        snap_source = best_state if best_state is not None else model_u.state_dict()
+        outer_iter_snapshots.append(
+            {k: v.detach().cpu().clone() for k, v in snap_source.items()}
+        )
     if best_state is not None:
         model_u.load_state_dict(best_state)
     train_objective = -float(best_overall) if np.isfinite(best_overall) else float('nan')
@@ -1184,4 +1201,5 @@ def train_pipinn_policy(
         train_seed=train_seed,
         train_history=all_hist,
         best_validation_loss=best_overall if np.isfinite(best_overall) else None,
+        outer_iter_snapshots=outer_iter_snapshots,
     )
