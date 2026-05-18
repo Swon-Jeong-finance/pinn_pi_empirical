@@ -81,6 +81,9 @@ def _run_single_rank_protocol(
     risky_cap_override: float | None,
     cash_floor_override: float | None,
     emit_legacy_fixed_layout: bool,
+    fdm_qp_devices_override: str | None = None,
+    fdm_qp_chunk_size_override: str | int | float | None = None,
+    fdm_qp_parallel_backend_override: str | None = None,
 ) -> dict[str, Any]:
     rank = int(entry['rank'])
     spec = str(entry['spec'])
@@ -91,11 +94,15 @@ def _run_single_rank_protocol(
         or manifest.get('selection_optimizer_backend')
         or ''
     ).strip().lower()
-    if entry_backend in {'ppgdpo', 'pipinn', 'pinn', 'fdm'}:
+    if entry_backend in {'ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'}:
         payload['optimizer_backend'] = entry_backend
     if entry_backend in {'pinn', 'fdm'}:
         payload.setdefault('pipinn', {})
         payload['pipinn']['policy_output_mode'] = 'foc_clip'
+    if entry_backend == 'fdm_pi':
+        payload.setdefault('pipinn', {})
+        payload['pipinn']['policy_output_mode'] = 'pure_qp'
+        payload['pipinn']['pde_form'] = 'g'
     base_cfg = Config.model_validate(payload)
     base_output_dir = Path(base_cfg.project.output_dir)
     rank_dir = Path(rank_root) / f'rank_{rank:03d}'
@@ -109,6 +116,16 @@ def _run_single_rank_protocol(
         cfg.ppgdpo.device = device_override
         if hasattr(cfg, 'pipinn'):
             cfg.pipinn.device = device_override
+        if hasattr(cfg, 'fdm') and str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() == 'fdm_pi':
+            current_qp_devices = str(getattr(cfg.fdm, 'qp_devices', 'cpu') or 'cpu').strip().lower()
+            if current_qp_devices in {'', 'cpu', 'auto'}:
+                cfg.fdm.qp_devices = device_override
+    if fdm_qp_devices_override is not None and hasattr(cfg, 'fdm'):
+        cfg.fdm.qp_devices = fdm_qp_devices_override
+    if fdm_qp_chunk_size_override is not None and hasattr(cfg, 'fdm'):
+        cfg.fdm.qp_chunk_size = fdm_qp_chunk_size_override
+    if fdm_qp_parallel_backend_override is not None and hasattr(cfg, 'fdm'):
+        cfg.fdm.qp_parallel_backend = str(fdm_qp_parallel_backend_override)
     if mc_rollouts_override is not None:
         cfg.ppgdpo.mc_rollouts = int(mc_rollouts_override)
     if mc_sub_batch_override is not None:
@@ -144,10 +161,14 @@ def _run_single_rank_protocol(
         'oos_protocol': effective_protocol,
         'output_dir': str(artifacts.output_dir),
         'device': (
-            'cpu'
-            if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() == 'fdm'
-            else device_override
-            or (cfg.pipinn.device if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() in {'pipinn', 'pinn'} else cfg.ppgdpo.device)
+            str(getattr(cfg.fdm, 'qp_devices', 'cpu'))
+            if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() == 'fdm_pi'
+            else (
+                'cpu'
+                if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() == 'fdm'
+                else device_override
+                or (cfg.pipinn.device if str(getattr(cfg, 'optimizer_backend', 'ppgdpo')).lower() in {'pipinn', 'pinn'} else cfg.ppgdpo.device)
+            )
         ),
         'optimizer_backend': str(getattr(cfg, 'optimizer_backend', 'ppgdpo')),
         'mc_rollouts': int(cfg.ppgdpo.mc_rollouts),
@@ -201,6 +222,9 @@ def run_rank_sweep(
     transaction_cost_bps_override: float | None = None,
     risky_cap_override: float | None = None,
     cash_floor_override: float | None = None,
+    fdm_qp_devices_override: str | None = None,
+    fdm_qp_chunk_size_override: str | int | float | None = None,
+    fdm_qp_parallel_backend_override: str | None = None,
     oos_protocols: list[str] | tuple[str, ...] | None = None,
     emit_legacy_fixed_layout: bool = False,
     max_parallel: int = 1,
@@ -246,6 +270,9 @@ def run_rank_sweep(
                 'risky_cap_override': risky_cap_override,
                 'cash_floor_override': cash_floor_override,
                 'emit_legacy_fixed_layout': emit_legacy_fixed_layout,
+                'fdm_qp_devices_override': fdm_qp_devices_override,
+                'fdm_qp_chunk_size_override': fdm_qp_chunk_size_override,
+                'fdm_qp_parallel_backend_override': fdm_qp_parallel_backend_override,
             })
 
     if parallel_backend not in {'process', 'thread'}:

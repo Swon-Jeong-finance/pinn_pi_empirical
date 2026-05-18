@@ -32,7 +32,7 @@ from .experiments import run_experiment
 from .policies import solve_mean_variance
 from .ppgdpo import solve_ppgdpo_projection, train_warmup_policy
 from .pipinn_backend import train_pipinn_policy
-from .fdm_backend import train_fdm_policy
+from .fdm_backend import train_fdm_policy, train_fdm_pi_policy
 from .transition import estimate_return_state_cross, fit_state_transition
 from .selection_splits import (
     SelectionSplitSpec,
@@ -65,6 +65,12 @@ def _strategy_label_map_for_backend(backend: str) -> dict[str, str]:
             'fdm_zero': 'ppgdpo_zero',
             'fdm_regime_gated': 'ppgdpo_regime_gated',
         })
+    elif backend_norm == 'fdm_pi':
+        out.update({
+            'fdm_pi': 'ppgdpo',
+            'fdm_pi_zero': 'ppgdpo_zero',
+            'fdm_pi_regime_gated': 'ppgdpo_regime_gated',
+        })
     elif backend_norm == 'pipinn':
         out.update({
             'pipinn': 'ppgdpo',
@@ -88,6 +94,9 @@ def _comparison_benchmark_notes_for_backend(backend: str) -> dict[str, Any]:
     elif backend_norm == 'fdm':
         variants = ['fdm', 'fdm_zero', 'fdm_regime_gated']
         method_note = 'finite-difference solution of the unconstrained PINN HJB with FOC clipping'
+    elif backend_norm == 'fdm_pi':
+        variants = ['fdm_pi', 'fdm_pi_zero', 'fdm_pi_regime_gated']
+        method_note = 'finite-difference fixed-policy g-PDE evaluation with PI-PINN QP policy improvement'
     elif backend_norm == 'pipinn':
         variants = ['pipinn', 'pipinn_zero', 'pipinn_regime_gated']
         method_note = 'PI-PINN value-gradient policy output'
@@ -226,6 +235,9 @@ class SelectionLitePPGDPOConfig:
     fdm_picard_tol: float = 1.0e-8
     fdm_save_grid: bool = False
     fdm_save_training_logs: bool = True
+    fdm_qp_devices: str | list[str] | None = 'cpu'
+    fdm_qp_chunk_size: int | float | str | None = 65536
+    fdm_qp_parallel_backend: str = 'process'
 
 
 @dataclass(frozen=True)
@@ -1135,6 +1147,9 @@ def _make_selection_lite_cfg(*, risk_aversion: float, lite_cfg: SelectionLitePPG
             picard_tol=float(lite_cfg.fdm_picard_tol),
             save_grid=bool(lite_cfg.fdm_save_grid),
             save_training_logs=bool(lite_cfg.fdm_save_training_logs),
+            qp_devices=lite_cfg.fdm_qp_devices,
+            qp_chunk_size=lite_cfg.fdm_qp_chunk_size,
+            qp_parallel_backend=str(lite_cfg.fdm_qp_parallel_backend),
         ),
     )
 
@@ -1197,6 +1212,9 @@ def _fdm_payload_from_lite_cfg(lite_cfg: SelectionLitePPGDPOConfig) -> dict[str,
         'picard_tol': float(lite_cfg.fdm_picard_tol),
         'save_grid': bool(lite_cfg.fdm_save_grid),
         'save_training_logs': bool(lite_cfg.fdm_save_training_logs),
+        'qp_devices': lite_cfg.fdm_qp_devices,
+        'qp_chunk_size': lite_cfg.fdm_qp_chunk_size,
+        'qp_parallel_backend': str(lite_cfg.fdm_qp_parallel_backend),
     }
 
 def _evaluate_ppgdpo_lite_candidate_block(
@@ -1268,6 +1286,19 @@ def _evaluate_ppgdpo_lite_candidate_block(
             tau_max=tau_max,
             training_mode=backend_norm,
         )
+    elif backend_norm == 'fdm_pi':
+        trainer = train_fdm_pi_policy(
+            train_pairs.states_t,
+            train_pairs.returns_tp1,
+            lite_runtime_cfg,
+            transaction_cost=float(lite_cfg.transaction_cost_bps) / 10000.0,
+            mean_model=mean_model,
+            transition=transition,
+            cross_est=cross_est,
+            cov_model=cov_model,
+            factor_repr=factor_repr,
+            tau_max=tau_max,
+        )
     elif backend_norm == 'fdm':
         trainer = train_fdm_policy(
             train_pairs.states_t,
@@ -1335,7 +1366,7 @@ def _evaluate_ppgdpo_lite_candidate_block(
                     f"selection_eval_mode={eval_mode!r} requires trainer.policy_weights_with_debug; "
                     f"optimizer_backend={lite_cfg.optimizer_backend!r} does not provide it"
                 )
-            extra_policy_kwargs = {'tau': tau_max} if backend_norm in {'pipinn', 'pinn', 'fdm'} else {}
+            extra_policy_kwargs = {'tau': tau_max} if backend_norm in {'pipinn', 'pinn', 'fdm', 'fdm_pi'} else {}
             ppgdpo_est_w, _ = trainer.policy_weights_with_debug(
                 state_row,
                 covariance=cov_eval,
@@ -1740,6 +1771,11 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
             raise ValueError(
                 "optimizer_backend='pinn' or optimizer_backend='fdm' requires pipinn_policy_output_mode='foc_clip'."
             )
+    if str(lite_cfg.optimizer_backend).lower() == 'fdm_pi':
+        if str(lite_cfg.pipinn_policy_output_mode).lower() != 'pure_qp':
+            raise ValueError(
+                "optimizer_backend='fdm_pi' requires pipinn_policy_output_mode='pure_qp'."
+            )
     if hasattr(out, 'pipinn'):
         out.pipinn.device = str(lite_cfg.pipinn_device)
         out.pipinn.dtype = str(lite_cfg.pipinn_dtype)
@@ -1764,7 +1800,7 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.pipinn.width = int(lite_cfg.pipinn_width)
         out.pipinn.depth = int(lite_cfg.pipinn_depth)
         out.pipinn.covariance_train_mode = str(lite_cfg.pipinn_covariance_train_mode)
-        out.pipinn.pde_form = str(lite_cfg.pipinn_pde_form)
+        out.pipinn.pde_form = 'g' if str(lite_cfg.optimizer_backend).lower() == 'fdm_pi' else str(lite_cfg.pipinn_pde_form)
         out.pipinn.policy_output_mode = str(lite_cfg.pipinn_policy_output_mode)
         out.pipinn.qp_solver_iters = int(lite_cfg.pipinn_qp_solver_iters)
         out.pipinn.qp_solver_tol = float(lite_cfg.pipinn_qp_solver_tol)
@@ -1784,6 +1820,8 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.fdm.scheme = str(lite_cfg.fdm_scheme)
         out.fdm.boundary = str(lite_cfg.fdm_boundary)
         out.fdm.drift_scheme = str(lite_cfg.fdm_drift_scheme)
+        out.fdm.reaction_step = str(lite_cfg.fdm_reaction_step)          
+        out.fdm.reaction_exp_clip = float(lite_cfg.fdm_reaction_exp_clip) 
         out.fdm.max_state_dim = int(getattr(lite_cfg, 'fdm_max_state_dim', 2))
         out.fdm.g_floor = float(lite_cfg.fdm_g_floor)
         out.fdm.enforce_positive = bool(getattr(lite_cfg, 'fdm_enforce_positive', True))
@@ -1791,6 +1829,9 @@ def _apply_selection_lite_runtime_overrides(cfg: Config, lite_cfg: SelectionLite
         out.fdm.picard_tol = float(lite_cfg.fdm_picard_tol)
         out.fdm.save_grid = bool(getattr(lite_cfg, 'fdm_save_grid', False))
         out.fdm.save_training_logs = bool(getattr(lite_cfg, 'fdm_save_training_logs', True))
+        out.fdm.qp_devices = getattr(lite_cfg, 'fdm_qp_devices', 'cpu')
+        out.fdm.qp_chunk_size = getattr(lite_cfg, 'fdm_qp_chunk_size', 65536)
+        out.fdm.qp_parallel_backend = str(getattr(lite_cfg, 'fdm_qp_parallel_backend', 'process'))
     return out
 
 def _set_config_window_from_block(cfg: Config, block: dict[str, Any]) -> Config:
@@ -1830,9 +1871,9 @@ def _summary_scalar(summary: pd.DataFrame, *, strategy: str, cross_mode: str, co
         'predictive_static': ['predictive_static', 'myopic'],
         'policy': ['policy', 'pgdpo'],
         'pgdpo': ['pgdpo', 'policy'],
-        'ppgdpo': ['ppgdpo', 'pipinn', 'pinn', 'fdm'],
-        'ppgdpo_zero': ['ppgdpo_zero', 'pipinn_zero', 'pinn_zero', 'fdm_zero'],
-        'ppgdpo_regime_gated': ['ppgdpo_regime_gated', 'pipinn_regime_gated', 'pinn_regime_gated', 'fdm_regime_gated'],
+        'ppgdpo': ['ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'],
+        'ppgdpo_zero': ['ppgdpo_zero', 'pipinn_zero', 'pinn_zero', 'fdm_zero', 'fdm_pi_zero'],
+        'ppgdpo_regime_gated': ['ppgdpo_regime_gated', 'pipinn_regime_gated', 'pinn_regime_gated', 'fdm_regime_gated', 'fdm_pi_regime_gated'],
         'pipinn': ['pipinn', 'ppgdpo'],
         'pipinn_zero': ['pipinn_zero', 'ppgdpo_zero'],
         'pipinn_regime_gated': ['pipinn_regime_gated', 'ppgdpo_regime_gated'],
@@ -1840,8 +1881,11 @@ def _summary_scalar(summary: pd.DataFrame, *, strategy: str, cross_mode: str, co
         'pinn_zero': ['pinn_zero', 'ppgdpo_zero'],
         'pinn_regime_gated': ['pinn_regime_gated', 'ppgdpo_regime_gated'],
         'fdm': ['fdm', 'ppgdpo'],
+        'fdm_pi': ['fdm_pi', 'ppgdpo'],
         'fdm_zero': ['fdm_zero', 'ppgdpo_zero'],
+        'fdm_pi_zero': ['fdm_pi_zero', 'ppgdpo_zero'],
         'fdm_regime_gated': ['fdm_regime_gated', 'ppgdpo_regime_gated'],
+        'fdm_pi_regime_gated': ['fdm_pi_regime_gated', 'ppgdpo_regime_gated'],
     }
     cross_aliases = {
         'estimated': ['estimated', 'reference'],
@@ -2267,6 +2311,13 @@ def native_select_factor_suite(
     fdm_g_floor: float = 1.0e-10,
     fdm_picard_iters: int = 5,
     fdm_picard_tol: float = 1.0e-8,
+    fdm_max_state_dim: int = 2,
+    fdm_enforce_positive: bool = True,
+    fdm_save_grid: bool = False,
+    fdm_save_training_logs: bool = True,
+    fdm_qp_devices: str | list[str] | None = 'cpu',
+    fdm_qp_chunk_size: int | float | str | None = 65536,
+    fdm_qp_parallel_backend: str = 'process',
     rerank_covariance_models: list[str] | tuple[str, ...] | None = None,
     select_rolling_oos_window: bool = True,
     rolling_oos_window_grid: list[int] | tuple[int, ...] | None = None,
@@ -2347,9 +2398,9 @@ def native_select_factor_suite(
     ]
 
     backend_norm = str(selection_optimizer_backend).strip().lower()
-    if backend_norm not in {'ppgdpo', 'pipinn', 'pinn', 'fdm'}:
+    if backend_norm not in {'ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'}:
         raise ValueError(
-            "selection_optimizer_backend must be one of 'ppgdpo', 'pipinn', 'pinn', or 'fdm'."
+            "selection_optimizer_backend must be one of 'ppgdpo', 'pipinn', 'pinn', 'fdm', or 'fdm_pi'."
         )
     # Auto-resolve mode defaults based on backend when the caller did not specify one.
     # This keeps backend ↔ policy-extraction coupling implicit:
@@ -2386,6 +2437,16 @@ def native_select_factor_suite(
             raise ValueError(
                 f"selection_optimizer_backend={backend_norm!r} requires --pipinn-policy-output-mode foc_clip."
             )
+    if backend_norm == 'fdm_pi':
+        if selection_eval_mode_norm != 'pure_qp':
+            raise ValueError(
+                "selection_optimizer_backend='fdm_pi' requires --selection-eval-mode pure_qp."
+            )
+        if pipinn_policy_output_mode_norm != 'pure_qp':
+            raise ValueError(
+                "selection_optimizer_backend='fdm_pi' requires --pipinn-policy-output-mode pure_qp."
+            )
+        pipinn_pde_form_norm = 'g'
 
     lite_cfg = SelectionLitePPGDPOConfig(
         optimizer_backend=backend_norm,
@@ -2445,6 +2506,13 @@ def native_select_factor_suite(
         fdm_g_floor=float(fdm_g_floor),
         fdm_picard_iters=int(fdm_picard_iters),
         fdm_picard_tol=float(fdm_picard_tol),
+        fdm_max_state_dim=int(fdm_max_state_dim),
+        fdm_enforce_positive=bool(fdm_enforce_positive),
+        fdm_save_grid=bool(fdm_save_grid),
+        fdm_save_training_logs=bool(fdm_save_training_logs),
+        fdm_qp_devices=fdm_qp_devices,
+        fdm_qp_chunk_size=fdm_qp_chunk_size,
+        fdm_qp_parallel_backend=str(fdm_qp_parallel_backend),
     )
     rerank_cov_specs = _parse_rerank_covariance_models(rerank_covariance_models)
     stage2_model_specs = _expand_stage2_model_specs(rerank_cov_specs)
@@ -3126,7 +3194,9 @@ def native_select_factor_suite(
                 fdm_payload=_fdm_payload_from_lite_cfg(lite_cfg),
             )
         backend_for_filename = str(lite_cfg.optimizer_backend).lower()
-        if backend_for_filename == 'fdm':
+        if backend_for_filename == 'fdm_pi':
+            cfg_filename = 'config_empirical_fdm_pi_apt.yaml'
+        elif backend_for_filename == 'fdm':
             cfg_filename = 'config_empirical_fdm_apt.yaml'
         elif backend_for_filename in {'pipinn', 'pinn'}:
             cfg_filename = 'config_empirical_pipinn_apt.yaml'
@@ -3235,8 +3305,8 @@ def native_select_factor_suite(
             'rerank_covariance_models': [spec.label for spec in rerank_cov_specs],
         'stage2_model_variants': [spec.label for spec in stage2_model_specs],
             'transaction_cost_bps': lite_cfg.transaction_cost_bps,
-            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'pipinn', 'pinn', 'fdm'} else None,
-            'fdm': _fdm_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() == 'fdm' else None,
+            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'pipinn', 'pinn', 'fdm', 'fdm_pi'} else None,
+            'fdm': _fdm_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'fdm', 'fdm_pi'} else None,
             'score_mode': (
                 'stage2 protocol+covariance selection with backend-aware dynamic optimizer; ce_est + 1.0*gain_vs_zero, with gain_vs_myopic kept for reporting only and final winners chosen by global rerank across all stage2 models from stage1 survivors'
                 if diagnostic_units else
@@ -3329,8 +3399,8 @@ def native_select_factor_suite(
             'rerank_covariance_models': [spec.label for spec in rerank_cov_specs],
         'stage2_model_variants': [spec.label for spec in stage2_model_specs],
             'transaction_cost_bps': lite_cfg.transaction_cost_bps,
-            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'pipinn', 'pinn', 'fdm'} else None,
-            'fdm': _fdm_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() == 'fdm' else None,
+            'pipinn': _pipinn_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'pipinn', 'pinn', 'fdm', 'fdm_pi'} else None,
+            'fdm': _fdm_payload_from_lite_cfg(lite_cfg) if str(lite_cfg.optimizer_backend).lower() in {'fdm', 'fdm_pi'} else None,
             'score_mode': (
                 'stage2 protocol+covariance selection with backend-aware dynamic optimizer; ce_est + 1.0*gain_vs_zero, with gain_vs_myopic kept for reporting only and final winners chosen by global rerank across all stage2 models from stage1 survivors'
                 if diagnostic_units else

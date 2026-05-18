@@ -96,6 +96,9 @@ def cmd_run_rank_sweep(args):
         parallel_backend=args.parallel_backend,
         risky_cap_override=args.risky_cap,
         cash_floor_override=args.cash_floor,
+        fdm_qp_devices_override=args.fdm_qp_devices,
+        fdm_qp_chunk_size_override=args.fdm_qp_chunk_size,
+        fdm_qp_parallel_backend_override=args.fdm_qp_parallel_backend,
     )
     print(f'output_dir: {artifacts.out_dir}')
     print(f'progress_csv: {artifacts.progress_csv}')
@@ -209,6 +212,13 @@ def cmd_select_native_suite(args):
         fdm_g_floor=args.fdm_g_floor,
         fdm_picard_iters=args.fdm_picard_iters,
         fdm_picard_tol=args.fdm_picard_tol,
+        fdm_max_state_dim=args.fdm_max_state_dim,
+        fdm_enforce_positive=bool(args.fdm_enforce_positive),
+        fdm_save_grid=bool(args.fdm_save_grid),
+        fdm_save_training_logs=bool(not args.disable_fdm_save_training_logs),
+        fdm_qp_devices=args.fdm_qp_devices,
+        fdm_qp_chunk_size=args.fdm_qp_chunk_size,
+        fdm_qp_parallel_backend=args.fdm_qp_parallel_backend,
         rerank_covariance_models=args.rerank_covariance_models,
         select_rolling_oos_window=bool(not args.disable_rolling_oos_window_selection),
         rolling_oos_window_grid=args.rolling_oos_window_grid,
@@ -313,9 +323,9 @@ def build_parser() -> argparse.ArgumentParser:
     '--selection-eval-mode',
     choices=['projection', 'pure_qp', 'foc_clip'],
     default=None,
-    help="Policy extraction at selection time. If unset, defaults to 'foc_clip' when backend='pinn', otherwise 'pure_qp'.",
+    help="Policy extraction at selection time. If unset, defaults to 'foc_clip' when backend='pinn'/'fdm', otherwise 'pure_qp'.",
     )
-    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn', 'fdm'], default='pipinn')
+    p_native.add_argument('--selection-optimizer-backend', choices=['ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'], default='pipinn')
     p_native.add_argument('--pipinn-device', default='auto')
     p_native.add_argument('--pipinn-dtype', choices=['float32', 'float64'], default='float64')
     p_native.add_argument('--pipinn-outer-iters', type=int, default=10)
@@ -344,7 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
     '--pipinn-policy-output-mode',
     choices=['projection', 'pure_qp', 'foc_clip'],
     default=None,
-    help="PI-PINN/PINN trainer policy output mode. If unset, defaults to 'foc_clip' when backend='pinn', otherwise 'pure_qp'.",
+    help="PI-PINN/PINN trainer policy output mode. If unset, defaults to 'foc_clip' when backend='pinn'/'fdm', otherwise 'pure_qp'.",
     )
     p_native.add_argument('--pipinn-qp-solver-iters', type=int, default=300)
     p_native.add_argument('--pipinn-qp-solver-tol', type=float, default=1.0e-10)
@@ -358,7 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--pipinn-show-epoch-progress', action='store_true')
     p_native.add_argument('--fdm-n-z1', type=int, default=81)
     p_native.add_argument('--fdm-n-z2', type=int, default=81)
-    p_native.add_argument('--fdm-n-tau', type=int, default=240)
+    p_native.add_argument('--fdm-n-tau', type=int, default=480)
     p_native.add_argument('--fdm-scheme', choices=['imex', 'imex_picard'], default='imex')
     p_native.add_argument('--fdm-boundary', choices=['neumann'], default='neumann')
     p_native.add_argument('--fdm-drift-scheme', choices=['upwind', 'central'], default='upwind')
@@ -367,6 +377,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_native.add_argument('--fdm-g-floor', type=float, default=1.0e-10)
     p_native.add_argument('--fdm-picard-iters', type=int, default=5)
     p_native.add_argument('--fdm-picard-tol', type=float, default=1.0e-8)
+    p_native.add_argument('--fdm-max-state-dim', type=int, choices=[1, 2], default=2,
+                          help='Max state dimensionality for FDM grid (1 or 2). Defaults to 2.')
+    p_native.add_argument('--fdm-enforce-positive', dest='fdm_enforce_positive', action='store_true', default=True,
+                          help='Floor g(τ,z) at fdm_g_floor each step (default: on).')
+    p_native.add_argument('--no-fdm-enforce-positive', dest='fdm_enforce_positive', action='store_false',
+                          help='Disable positivity enforcement on g grid.')
+    p_native.add_argument('--fdm-save-grid', action='store_true',
+                          help='Persist full g/grad_log_g grids for debugging (very large).')
+    p_native.add_argument('--disable-fdm-save-training-logs', action='store_true',
+                          help='Skip writing FDM per-refit training manifest CSVs.')
+    p_native.add_argument('--fdm-qp-devices', default='cpu',
+                          help='Comma-separated devices for FDM-PI QP policy improvement. Example: cuda:0,cuda:1,cuda:2,cuda:3. PDE solve remains CPU/SciPy.')
+    p_native.add_argument('--fdm-qp-chunk-size', default='all',
+                          help='QP chunk row count for FDM-PI. Use an integer (65536), a fraction (0.2), a percent string (20%), or all (whole size of grids).')
+    p_native.add_argument('--fdm-qp-parallel-backend', choices=['auto', 'none', 'serial', 'thread', 'process'], default='process',
+                          help='Parallel backend for FDM-PI chunked QP solving across fdm-qp-devices.')
     p_native.add_argument('--rerank-covariance-models', nargs='+', choices=['const', 'diag', 'dcc', 'adcc', 'regime_dcc'], default=['const', 'dcc', 'adcc', 'regime_dcc'])
     p_native.add_argument('--selection-protocols', nargs='+', default=None, help='Integrated stage1/stage2 protocol candidates. Example: rolling240m_annual. If omitted, the default is a fixed 20-year rolling protocol built from --rolling-oos-window-grid.')
     p_native.add_argument('--rolling-oos-window-grid', nargs='+', type=int, default=None, help='Integrated stage1/stage2 rolling annual window candidates in months. Default: 240. Warm-start semantics: early validation/OOS refits use the available history until the full window is reached.')
@@ -387,6 +413,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_rank.add_argument('--emit-legacy-fixed-layout', action='store_true')
     p_rank.add_argument('--max-parallel', type=int, default=1, help='Run rank/protocol jobs concurrently when >1.')
     p_rank.add_argument('--parallel-backend', choices=['process', 'thread'], default='process')
+    p_rank.add_argument('--fdm-qp-devices', default=None,
+                        help='Override fdm.qp_devices for FDM-PI internal QP solving. Example: cuda:0,cuda:1,cuda:2,cuda:3')
+    p_rank.add_argument('--fdm-qp-chunk-size', default='all',
+                        help='Override fdm.qp_chunk_size. Integer rows, fraction (0.2), or percent string (20%).')
+    p_rank.add_argument('--fdm-qp-parallel-backend', choices=['auto', 'none', 'serial', 'thread', 'process'], default=None,
+                        help='Override fdm.qp_parallel_backend for FDM-PI internal QP solving.')
     p_rank.set_defaults(func=cmd_run_rank_sweep)
 
     register_legacy_parsers(sub)

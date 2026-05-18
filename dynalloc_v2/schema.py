@@ -214,6 +214,9 @@ class FDMConfig(BaseModel):
     picard_tol: float = 1.0e-8
     save_grid: bool = False
     save_training_logs: bool = True
+    qp_devices: str | list[str] | None = 'cpu'
+    qp_chunk_size: int | float | str | None = 65536
+    qp_parallel_backend: Literal['auto', 'none', 'serial', 'thread', 'process'] = 'process'
 
     @model_validator(mode='after')
     def _validate_fdm(self):
@@ -229,10 +232,28 @@ class FDMConfig(BaseModel):
             raise ValueError('fdm.g_floor must be positive.')
         if float(self.reaction_exp_clip) <= 0.0:
             raise ValueError('fdm.reaction_exp_clip must be positive.')
+        raw_chunk = self.qp_chunk_size
+        if raw_chunk is not None:
+            try:
+                if isinstance(raw_chunk, str):
+                    text = raw_chunk.strip().lower()
+                    if text not in {'', 'auto', 'default', 'none', 'full', 'all'}:
+                        value = float(text[:-1].strip()) / 100.0 if text.endswith('%') else float(text)
+                        if value <= 0.0:
+                            raise ValueError
+                else:
+                    if float(raw_chunk) <= 0.0:
+                        raise ValueError
+            except Exception as exc:
+                raise ValueError(
+                    'fdm.qp_chunk_size must be a positive integer, positive fraction, percent string, or auto/full.'
+                ) from exc
+        if isinstance(self.qp_devices, list) and not [str(x).strip() for x in self.qp_devices if str(x).strip()]:
+            raise ValueError('fdm.qp_devices list cannot be empty.')
         return self
 
 class Config(BaseModel):
-    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn', 'fdm'] = 'ppgdpo'
+    optimizer_backend: Literal['ppgdpo', 'pipinn', 'pinn', 'fdm', 'fdm_pi'] = 'ppgdpo'
     project: ProjectConfig
     data: DataConfig
     split: SplitConfig
@@ -257,5 +278,15 @@ class Config(BaseModel):
                     "optimizer_backend='pinn' or optimizer_backend='fdm' requires pipinn.policy_output_mode='foc_clip'. "
                     "Traditional PINN/FDM uses FOC-derived unconstrained policy plus clipping, "
                     "not pure_qp/projection policy extraction."
+                )
+        if backend == 'fdm_pi':
+            if mode != 'pure_qp':
+                raise ValueError(
+                    "optimizer_backend='fdm_pi' requires pipinn.policy_output_mode='pure_qp'. "
+                    "FDM-PI uses the PI-PINN admissible-set QP policy improvement step."
+                )
+            if str(self.pipinn.pde_form).lower() != 'g':
+                raise ValueError(
+                    "optimizer_backend='fdm_pi' solves the g-form PDE only; set pipinn.pde_form='g'."
                 )
         return self
